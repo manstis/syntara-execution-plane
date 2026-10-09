@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "execution-plane-transport-direct"
+version = "0.1.0"
+description = "Immediate authenticated HTTP transport for execution-plane commands"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "execution-plane-client>=0.1.0,<0.2.0",
+    "httpx>=0.28.1",
+]
+
+[tool.hatch.build.targets.wheel]
+include = ["/*.py", "/py.typed"]
+
+[tool.hatch.build.targets.wheel.sources]
+"" = "execution_plane_transport_direct"
+
+[tool.hatch.build]
+dev-mode-dirs = [".."]
+
+[tool.hatch.build.targets.sdist]
+include = ["/*.py", "/py.typed", "/pyproject.toml", "/README.md"]

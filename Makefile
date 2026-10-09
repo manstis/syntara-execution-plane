@@ -1,4 +1,8 @@
-.PHONY: install test test-integration lint format typecheck openapi migrate image secrets certs setup compose-up compose-down generate-token kind-target submit-work
+.PHONY: install test test-integration lint format typecheck openapi migrate-direct migrate-journal \
+	image-direct image-journal secrets certs setup \
+	compose-up-direct compose-down-direct \
+	compose-up-journal compose-down-journal \
+	generate-token kind-target submit-work
 
 install:
 	uv sync --locked --all-groups
@@ -21,11 +25,17 @@ typecheck:
 openapi:
 	uv run python tools/export_openapi.py
 
-migrate:
+migrate-direct:
 	uv run alembic -c alembic.ini upgrade head
 
-image:
-	podman build -f Containerfile -t localhost/execution-plane:dev .
+migrate-journal: migrate-direct
+	uv run alembic -c src/execution_plane_transport_journal/alembic.ini upgrade head
+
+image-direct:
+	podman build -f Containerfile.direct -t localhost/execution-plane:dev .
+
+image-journal:
+	podman build -f Containerfile.journal -t localhost/execution-plane-journal:dev .
 
 secrets:
 	./tools/generate_secrets.sh
@@ -35,11 +45,17 @@ certs:
 
 setup: install secrets certs
 
-compose-up: setup
-	uvx podman-compose -f compose.yaml up --build
+compose-up-direct: setup
+	uvx podman-compose -p execution-plane-direct -f compose.direct.yaml up --build
 
-compose-down:
-	uvx podman-compose -f compose.yaml down
+compose-down-direct:
+	uvx podman-compose -p execution-plane-direct -f compose.direct.yaml down
+
+compose-up-journal: setup
+	uvx podman-compose -p execution-plane-journal -f compose.journal.yaml up --build
+
+compose-down-journal:
+	uvx podman-compose -p execution-plane-journal -f compose.journal.yaml down
 
 generate-token:
 	uv run python tools/generate_jwt_for_ep.py

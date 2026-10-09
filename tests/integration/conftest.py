@@ -54,12 +54,18 @@ def integration_database_url() -> str:
 
 @pytest.fixture(scope="session")
 def migrated_database(integration_database_url: str) -> str:
-    """Run alembic migrations against the test database and return the URL."""
+    """Run EP domain and Journal transport migrations against the test database."""
     env = {**os.environ, "DATABASE_URL": integration_database_url}
     subprocess.run(
         ["uv", "run", "alembic", "-c", "alembic.ini", "upgrade", "head"],
         check=True,
         env=env,
+        cwd=_REPO_ROOT,
+    )
+    subprocess.run(
+        ["uv", "run", "alembic", "-c", "src/execution_plane_transport_journal/alembic.ini", "upgrade", "head"],
+        check=True,
+        env={**env, "EP_JOURNAL_DATABASE_URL": integration_database_url},
         cwd=_REPO_ROOT,
     )
     return integration_database_url

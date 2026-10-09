@@ -24,6 +24,8 @@ jobs:
       - run: uv run ruff format --check src tests
       - run: uv run mypy --strict src
       - run: uv run pytest
+      - run: uv build src/execution_plane_client --out-dir dist/client
+      - run: uv build --out-dir dist/service
 
   # Regenerates openapi.yaml and fails if the committed file differs.
   # To fix: run `uv run python tools/export_openapi.py` and commit the result.
@@ -46,14 +48,18 @@ jobs:
             exit 1
           fi
 
-  # Validate the container image builds on every change. Publishing happens
-  # separately on version tags (see .github/workflows/release.yml); both share
-  # the build via the container-build composite action.
+  # Validate both transport-specific images on every change. Publishing happens
+  # separately on version tags (see .github/workflows/release.yml).
   build-image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/container-build
+      - name: Build direct transport image
+        uses: ./.github/actions/container-build
+      - name: Build Journal transport image
+        uses: ./.github/actions/container-build
+        with:
+          file: Containerfile.journal
 
   # Runs the PostgreSQL persistence tests against a real database.
   # No Kubernetes cluster required.

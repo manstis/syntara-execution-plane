@@ -83,6 +83,8 @@ async def ep_cluster(migrated_database: str) -> AsyncGenerator[Cluster, None]:
             _CLI_ACTOR_ID,
             labels={"provider": "kind", "cluster": _CLUSTER_NAME},
             cluster_type=ClusterType.OPENSHIFT,
+            source_client_id="ep-it-dispatch",
+            source_integration_id=uuid.uuid4(),
         )
 
         if ca_cert:

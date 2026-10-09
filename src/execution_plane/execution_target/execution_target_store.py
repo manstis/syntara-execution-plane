@@ -97,27 +97,28 @@ class ExecutionTargetStore(StoreBase):
 
         async with self._session_context() as session:
             try:
-                cluster = await session.get(Cluster, cluster_id, with_for_update=True)
-                if not self._can_add_execution_target(cluster):
-                    raise ClusterNotAvailableError(cluster_id)  # noqa: TRY301
-                if is_default:
-                    result = await session.execute(
-                        select(ExecutionTarget)
-                        .where(col(ExecutionTarget.cluster_id) == cluster_id)
-                        .where(col(ExecutionTarget.is_default).is_(True))
-                    )
-                    if result.scalar_one_or_none() is not None:
-                        raise DefaultExecutionTargetError  # noqa: TRY301
-                session.add(target)
-                await session.commit()
-                return self._without_secret(target)
+                async with self._recoverable_insert(session):
+                    cluster = await session.get(Cluster, cluster_id, with_for_update=True)
+                    if not self._can_add_execution_target(cluster):
+                        raise ClusterNotAvailableError(cluster_id)  # noqa: TRY301
+                    if is_default:
+                        result = await session.execute(
+                            select(ExecutionTarget)
+                            .where(col(ExecutionTarget.cluster_id) == cluster_id)
+                            .where(col(ExecutionTarget.is_default).is_(True))
+                        )
+                        if result.scalar_one_or_none() is not None:
+                            raise DefaultExecutionTargetError  # noqa: TRY301
+                    session.add(target)
+                    await self._commit(session)
+                    return self._without_secret(target)
             except IntegrityError as exc:
-                await session.rollback()
+                await self._rollback(session)
                 if is_default:
                     raise DefaultExecutionTargetError from exc
                 raise
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def get(self, target_id: uuid.UUID, *, include_secret: bool = False) -> ExecutionTarget | None:
@@ -174,10 +175,10 @@ class ExecutionTargetStore(StoreBase):
                 target.status = TargetStatus.DRAINING
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(target)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def activate(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> ExecutionTarget:
@@ -193,10 +194,10 @@ class ExecutionTargetStore(StoreBase):
                 target.status = TargetStatus.ACTIVE
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(target)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def update(
@@ -231,10 +232,10 @@ class ExecutionTargetStore(StoreBase):
                     target.api_key = api_key
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(target)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def reactivate(
@@ -262,10 +263,10 @@ class ExecutionTargetStore(StoreBase):
                 target.placement = placement
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(target)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def mark_failed(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> ExecutionTarget:
@@ -280,10 +281,10 @@ class ExecutionTargetStore(StoreBase):
                 target.status_message = "target drain failed"
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(target)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def finalize_delete(self, target_id: uuid.UUID) -> None:
@@ -318,9 +319,9 @@ class ExecutionTargetStore(StoreBase):
                     .values(execution_target_id=None)
                 )
                 await session.delete(target)
-                await session.commit()
+                await self._commit(session)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     @staticmethod

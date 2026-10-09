@@ -11,6 +11,7 @@ license = "Apache-2.0"
 requires-python = ">=3.12,<3.15"
 authors = [{ name = "Syntara contributors" }]
 dependencies = [
+    "execution-plane-client>=0.1.0,<0.2.0",
     "alembic>=1.14.0",
     "asyncpg>=0.30.0",
     "cryptography>=48.0.1",
@@ -28,18 +29,27 @@ dependencies = [
     "uvicorn[standard]>=0.34.0",
 ]
 
+[project.optional-dependencies]
+direct = ["execution-plane-transport-direct>=0.1.0,<0.2.0"]
+journal = ["execution-plane-transport-journal>=0.1.0,<0.2.0"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/execution_plane"]
 
 [tool.hatch.build.targets.sdist]
 only-include = [
     "src/execution_plane",
+    "src/execution_plane_client",
+    "src/execution_plane_transport_direct",
+    "src/execution_plane_transport_journal",
     "README.md",
 ]
 
 [project.scripts]
-execution-plane-worker = "execution_plane.worker:main"
-execution-plane-api = "execution_plane.api.main:main"
+execution-plane-worker = "execution_plane_transport_direct.ep_runtime:worker_main"
+execution-plane-api = "execution_plane_transport_direct.ep_runtime:api_main"
+execution-plane-worker-journal = "execution_plane_transport_journal.ep_runtime:worker_main"
+execution-plane-api-journal = "execution_plane_transport_journal.ep_runtime:api_main"
 
 [project.urls]
 Repository = "https://github.com/syntara-orchestration/syntara-execution-plane"
@@ -54,6 +64,7 @@ dev = [
     "pytest-timeout>=2.3.0",
     "grpcio-tools==1.78.0",
     "ruff>=0.14.0,<0.14.4",
+    "execution-plane-transport-journal>=0.1.0,<0.2.0",
 ]
 
 [tool.pytest.ini_options]
@@ -102,4 +113,6 @@ show_missing = true
 skip_covered = true
 
 [tool.uv.sources]
-# The package is intentionally standalone; Syntara-specific adapters live in Syntara.
+execution-plane-client = { path = "src/execution_plane_client", editable = true }
+execution-plane-transport-direct = { path = "src/execution_plane_transport_direct", editable = true }
+execution-plane-transport-journal = { path = "src/execution_plane_transport_journal", editable = true }

@@ -12,6 +12,7 @@ from sqlalchemy.pool import NullPool
 
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
 from execution_plane.work_store import WorkStore
+from execution_plane_client.handlers import CompletionRecorder
 
 
 class _Session:
@@ -85,7 +86,9 @@ class _ClaimResult:
 
 
 def _store() -> WorkStore:
-    return WorkStore("postgresql+asyncpg://localhost/syntara")
+    store = WorkStore("postgresql+asyncpg://localhost/syntara")
+    store.set_completion_recorder(AsyncMock())
+    return store
 
 
 @pytest.mark.asyncio
@@ -108,6 +111,44 @@ async def test_dispatch_owns_session_and_commits_notification() -> None:
     assert session.added is item
     assert session.commits == 1
     session.execute.assert_awaited()
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_direct_completion_hook_runs_after_provider_commit() -> None:
+    events = []
+    item = WorkItem(
+        id=uuid.uuid4(),
+        client_id="test-client",
+        project_id=uuid.uuid4(),
+        request_id=str(uuid.uuid4()),
+        request_hash="f" * 64,
+        work_correlation_id=uuid.uuid4(),
+        status=WorkItemStatus.DISPATCHED,
+        payload={},
+        created_at=datetime.now(UTC),
+    )
+
+    class Session(_Session):
+        async def commit(self) -> None:
+            events.append("commit")
+            await super().commit()
+
+    class Recorder(CompletionRecorder):
+        async def __call__(self, _session: object, _item: object) -> None:
+            events.append("transaction")
+
+        async def after_commit(self, _item: object) -> None:
+            events.append("after_commit")
+
+    store = _store()
+    session = Session(item)
+    store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
+    store.set_completion_recorder(Recorder())
+
+    await store.set_result(item.id, {"value": 42}, WorkItemStatus.COMPLETED)
+
+    assert events == ["transaction", "commit", "after_commit"]
     await store.close()
 
 
@@ -217,9 +258,8 @@ async def test_uncertain_dispatch_records_reconciliation_callback() -> None:
     assert item.status is WorkItemStatus.RECONCILIATION_REQUIRED
     assert item.completed_at is not None
     assert item.result["error_type"] == "WorkloadOutcomeUnknownError"
-    assert session.added is not None
-    assert session.added.status == WorkItemStatus.RECONCILIATION_REQUIRED.value
-    assert session.added.result == item.result
+    assert isinstance(store._completion_recorder, AsyncMock)
+    store._completion_recorder.assert_awaited_once_with(session, item)
     assert session.commits == 1
     await store.close()
 

@@ -9,25 +9,29 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import and_, case, or_, select, text
+from sqlalchemy import and_, case, or_, select, text, true
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col
 
 from execution_plane.models.cluster import Cluster, ClusterStatus
-from execution_plane.models.completion_event import CompletionEvent
 from execution_plane.models.execution_target import ExecutionTarget, TargetStatus
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
 from execution_plane.store_base import StoreBase
 from execution_plane.store_errors import StaleClaimError
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+    from sqlalchemy.pool import Pool
+
+    from execution_plane_client.handlers import CompletionRecorder
 
 _NOTIFY_CHANNEL = "execution_plane_work_items"
+logger = logging.getLogger(__name__)
 
 
 class WorkItemNotFoundError(LookupError):
@@ -48,6 +52,55 @@ class IdempotencyConflictError(ValueError):
 
 class WorkStore(StoreBase):
     """Persist work item lifecycle transitions and own database resources."""
+
+    def __init__(
+        self,
+        database_url: str | None = None,
+        poolclass: type[Pool] | None = None,
+        *,
+        engine: AsyncEngine | None = None,
+        session: AsyncSession | None = None,
+    ) -> None:
+        """Preserve store ownership semantics and start without a domain recorder."""
+        super().__init__(database_url, poolclass, engine=engine, session=session)
+        self._completion_recorder: CompletionRecorder | None = None
+
+    def set_completion_recorder(self, recorder: CompletionRecorder) -> None:
+        """Configure durable command outcomes before any runtime polling begins."""
+        self._completion_recorder = recorder
+
+    async def _record_completion(self, session: AsyncSession, item: WorkItem) -> None:
+        if self._completion_recorder is None:
+            error = "Command-backed work requires a completion recorder"
+            raise RuntimeError(error)
+        await self._completion_recorder(session, item)
+
+    async def _publish_completion(self, item: WorkItem) -> None:
+        """Run direct callbacks after the terminal provider transaction commits."""
+        if not self._owns_transaction:
+            return
+        recorder = self._completion_recorder
+        after_commit = None if recorder is None else getattr(type(recorder), "after_commit", None)
+        if after_commit is None:
+            return
+        try:
+            await after_commit(recorder, item)
+        except Exception:
+            logger.exception("Post-commit work completion hook failed", extra={"work_item_id": str(item.id)})
+
+    @staticmethod
+    def _attempts_exhausted(item: WorkItem) -> bool:
+        maximum = item.payload.get("_ep_max_attempts")
+        return isinstance(maximum, int) and item.payload.get("_ep_execution_attempts", 0) >= maximum
+
+    async def _record_exhaustion(self, session: AsyncSession, item: WorkItem) -> None:
+        now = datetime.now(UTC)
+        item.status = WorkItemStatus.FAILED
+        item.result = {"error": "Safe execution attempt limit exhausted", "error_type": "ExecutionAttemptsExhausted"}
+        item.completed_at = now
+        item.claimed_at = None
+        item.claim_owner_id = None
+        await self._record_completion(session, item)
 
     async def dispatch(
         self,
@@ -84,17 +137,18 @@ class WorkStore(StoreBase):
         )
         async with self._session_context() as session:
             try:
-                result = await session.execute(select(WorkItem).where(key_filter))
-                existing = result.scalars().first()
-                if existing is not None:
-                    self._validate_same_request(existing, request_hash)
-                    return existing
-                session.add(item)
-                # pg_notify is transactional — delivered only after this commit.
-                await session.execute(text(f"SELECT pg_notify('{_NOTIFY_CHANNEL}', '')"))
-                await session.commit()
+                async with self._recoverable_insert(session):
+                    result = await session.execute(select(WorkItem).where(key_filter))
+                    existing = result.scalars().first()
+                    if existing is not None:
+                        self._validate_same_request(existing, request_hash)
+                        return existing
+                    session.add(item)
+                    # pg_notify is transactional — delivered only after this commit.
+                    await session.execute(text(f"SELECT pg_notify('{_NOTIFY_CHANNEL}', '')"))
+                    await self._commit(session)
             except IntegrityError:
-                await session.rollback()
+                await self._rollback(session)
                 result = await session.execute(select(WorkItem).where(key_filter))
                 existing = result.scalars().first()
                 if existing is None:
@@ -102,7 +156,7 @@ class WorkStore(StoreBase):
                 self._validate_same_request(existing, request_hash)
                 return existing
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
         return item
 
@@ -122,49 +176,6 @@ class WorkStore(StoreBase):
             )
             return result.scalars().first()
 
-    async def get_by_request_id(self, request_id: str, *, client_id: str, project_id: uuid.UUID) -> WorkItem | None:
-        """Resolve an idempotency key without exposing other callers' records."""
-        async with self._session_context() as session:
-            result = await session.execute(
-                select(WorkItem)
-                .where(col(WorkItem.request_id) == request_id)
-                .where(col(WorkItem.client_id) == client_id)
-                .where(col(WorkItem.project_id) == project_id)
-            )
-            return result.scalars().first()
-
-    async def get_completion_event(self, work_item_id: uuid.UUID) -> CompletionEvent | None:
-        """Return the durable result event associated with a terminal work item."""
-        async with self._session_context() as session:
-            result = await session.execute(
-                select(CompletionEvent).where(col(CompletionEvent.work_item_id) == work_item_id)
-            )
-            return result.scalar_one_or_none()
-
-    async def list_scoped(self, *, client_id: str, project_id: uuid.UUID, limit: int) -> list[WorkItem]:
-        """Return a bounded list inside the authenticated client/project scope."""
-        async with self._session_context() as session:
-            result = await session.execute(
-                select(WorkItem)
-                .where(col(WorkItem.client_id) == client_id)
-                .where(col(WorkItem.project_id) == project_id)
-                .order_by(col(WorkItem.created_at).desc())
-                .limit(limit)
-            )
-            return list(result.scalars().all())
-
-    async def list_for_client(self, *, client_id: str, limit: int) -> list[WorkItem]:
-        """Return bounded work for a client whose signed grant covers all projects."""
-        async with self._session_context() as session:
-            result = await session.execute(
-                select(WorkItem)
-                .where(col(WorkItem.client_id) == client_id)
-                .where(col(WorkItem.project_id) != uuid.UUID(int=0))
-                .order_by(col(WorkItem.created_at).desc())
-                .limit(limit)
-            )
-            return list(result.scalars().all())
-
     async def claim_one(self) -> WorkItem | None:
         """Claim queued work or safely recover a pre-dispatch claim lease."""
         lease_expiry = datetime.now(UTC) - timedelta(seconds=60)
@@ -176,7 +187,8 @@ class WorkStore(StoreBase):
                     .where(col(WorkItem.claimed_at) < lease_expiry)
                     .with_for_update(skip_locked=True)
                 )
-                for uncertain in uncertain_result.scalars().all():
+                uncertain_items = uncertain_result.scalars().all()
+                for uncertain in uncertain_items:
                     cancellation_requested = uncertain.status is WorkItemStatus.CANCEL_REQUESTED
                     uncertain.status = WorkItemStatus.RECONCILIATION_REQUIRED
                     now = datetime.now(UTC)
@@ -187,21 +199,10 @@ class WorkStore(StoreBase):
                     }
                     uncertain.claim_owner_id = None
                     uncertain.completed_at = now
-                    session.add(
-                        CompletionEvent(
-                            id=uuid.uuid4(),
-                            work_item_id=uncertain.id,
-                            client_id=uncertain.client_id,
-                            project_id=uncertain.project_id,
-                            request_id=uncertain.request_id,
-                            state_revision=1,
-                            status=WorkItemStatus.RECONCILIATION_REQUIRED.value,
-                            result=uncertain.result,
-                            created_at=now,
-                            next_attempt_at=now,
-                        )
-                    )
-                await session.commit()
+                    await self._record_completion(session, uncertain)
+                await self._commit(session)
+                for uncertain in uncertain_items:
+                    await self._publish_completion(uncertain)
 
                 result = await session.execute(
                     select(WorkItem)
@@ -236,6 +237,11 @@ class WorkStore(StoreBase):
                         .where(col(Cluster.enabled).is_(True))
                         .where(col(Cluster.status) == ClusterStatus.ACTIVE)
                         .where(
+                            col(Cluster.source_client_id) == item.client_id
+                            if item.payload.get("_ep_command_id")
+                            else true()
+                        )
+                        .where(
                             or_(
                                 col(Cluster.project_ids).is_(None),
                                 col(Cluster.project_ids).contains([str(item.project_id)]),
@@ -254,10 +260,10 @@ class WorkStore(StoreBase):
                 item.claimed_at = datetime.now(UTC)
                 item.claim_owner_id = uuid.uuid4()
                 item.claim_generation += 1
-                await session.commit()
+                await self._commit(session)
                 return item
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def mark_dispatched(
@@ -285,12 +291,22 @@ class WorkStore(StoreBase):
                     return True
                 if item.status is not WorkItemStatus.CLAIMED:
                     return False
+                if self._attempts_exhausted(item):
+                    await self._record_exhaustion(session, item)
+                    await self._commit(session)
+                    await self._publish_completion(item)
+                    return False
+                if item.payload.get("_ep_command_id"):
+                    item.payload = {
+                        **item.payload,
+                        "_ep_execution_attempts": item.payload.get("_ep_execution_attempts", 0) + 1,
+                    }
                 item.status = WorkItemStatus.DISPATCHED
                 item.claimed_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return True
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def refresh_claim(
@@ -316,7 +332,7 @@ class WorkStore(StoreBase):
                 WorkItemStatus.RECONCILIATION_REQUIRED,
             }:
                 item.claimed_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
             return item.status is WorkItemStatus.CANCEL_REQUESTED
 
     async def update_backend_resource(
@@ -349,9 +365,9 @@ class WorkStore(StoreBase):
                     item.backend_resource_uid = resource_uid
                 item.resource_cleanup_status = cleanup_status
                 item.resource_cleanup_error = cleanup_error[:1000] if cleanup_error else None
-                await session.commit()
+                await self._commit(session)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def set_result(
@@ -363,7 +379,7 @@ class WorkStore(StoreBase):
         claim_owner_id: uuid.UUID | None = None,
         claim_generation: int | None = None,
     ) -> WorkItem:
-        """Atomically persist a terminal result and its completion outbox event."""
+        """Atomically persist a terminal result and its completion command."""
         async with self._session_context() as session:
             try:
                 item = await session.get(WorkItem, item_id, with_for_update=True)
@@ -377,24 +393,12 @@ class WorkStore(StoreBase):
                 item.status = status
                 item.completed_at = now
                 item.claim_owner_id = None
-                session.add(
-                    CompletionEvent(
-                        id=uuid.uuid4(),
-                        work_item_id=item.id,
-                        client_id=item.client_id,
-                        project_id=item.project_id,
-                        request_id=item.request_id,
-                        state_revision=1,
-                        status=status.value,
-                        result=result,
-                        created_at=now,
-                        next_attempt_at=now,
-                    )
-                )
-                await session.commit()
+                await self._record_completion(session, item)
+                await self._commit(session)
+                await self._publish_completion(item)
                 return item
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def request_cancel(
@@ -418,10 +422,12 @@ class WorkStore(StoreBase):
                 if item is None:
                     raise WorkItemNotFoundError(item_id)  # noqa: TRY301
                 await self._request_cancel_locked(session, item)
-                await session.commit()
+                await self._commit(session)
+                if item.status in {WorkItemStatus.COMPLETED, WorkItemStatus.FAILED, WorkItemStatus.CANCELLED}:
+                    await self._publish_completion(item)
                 return item
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def mark_reconciliation_required(
@@ -441,35 +447,28 @@ class WorkStore(StoreBase):
                 self._validate_claim(item, claim_owner_id, claim_generation)
                 if item.status in {WorkItemStatus.COMPLETED, WorkItemStatus.FAILED, WorkItemStatus.CANCELLED}:
                     return item
-                cancel_requested = item.status is WorkItemStatus.CANCEL_REQUESTED
-                item.status = WorkItemStatus.RECONCILIATION_REQUIRED
-                now = datetime.now(UTC)
-                item.result = {
+                cancel_requested = item.status is WorkItemStatus.CANCEL_REQUESTED or bool(
+                    item.result and item.result.get("cancellation_requested")
+                )
+                result = {
                     "error": reason[:1000],
                     "error_type": "WorkloadOutcomeUnknownError",
                     "cancellation_requested": cancel_requested,
                 }
+                if item.status is WorkItemStatus.RECONCILIATION_REQUIRED and item.result == result:
+                    return item
+                item.status = WorkItemStatus.RECONCILIATION_REQUIRED
+                now = datetime.now(UTC)
+                item.result = result
                 item.claimed_at = None
                 item.claim_owner_id = None
                 item.completed_at = now
-                session.add(
-                    CompletionEvent(
-                        id=uuid.uuid4(),
-                        work_item_id=item.id,
-                        client_id=item.client_id,
-                        project_id=item.project_id,
-                        request_id=item.request_id,
-                        state_revision=1,
-                        status=WorkItemStatus.RECONCILIATION_REQUIRED.value,
-                        result=item.result,
-                        created_at=now,
-                        next_attempt_at=now,
-                    )
-                )
-                await session.commit()
+                await self._record_completion(session, item)
+                await self._commit(session)
+                await self._publish_completion(item)
                 return item
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def requeue_pre_execute_failure(
@@ -494,28 +493,20 @@ class WorkStore(StoreBase):
                     item.completed_at = now
                     item.claimed_at = None
                     item.claim_owner_id = None
-                    session.add(
-                        CompletionEvent(
-                            id=uuid.uuid4(),
-                            work_item_id=item.id,
-                            client_id=item.client_id,
-                            project_id=item.project_id,
-                            request_id=item.request_id,
-                            state_revision=1,
-                            status=WorkItemStatus.CANCELLED.value,
-                            result=result,
-                            created_at=now,
-                            next_attempt_at=now,
-                        )
-                    )
+                    await self._record_completion(session, item)
                 elif item.status is WorkItemStatus.DISPATCHED:
-                    item.status = WorkItemStatus.PENDING
-                    item.claimed_at = None
-                    item.claim_owner_id = None
-                await session.commit()
+                    if self._attempts_exhausted(item):
+                        await self._record_exhaustion(session, item)
+                    else:
+                        item.status = WorkItemStatus.PENDING
+                        item.claimed_at = None
+                        item.claim_owner_id = None
+                await self._commit(session)
+                if item.status in {WorkItemStatus.COMPLETED, WorkItemStatus.FAILED, WorkItemStatus.CANCELLED}:
+                    await self._publish_completion(item)
                 return item
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     @staticmethod
@@ -529,61 +520,6 @@ class WorkStore(StoreBase):
             return
         if item.claim_owner_id != claim_owner_id or item.claim_generation != claim_generation:
             raise StaleClaimError("Worker claim is no longer current")  # noqa: EM101, TRY003
-
-    async def request_cancel_by_request_id(
-        self,
-        request_id: str,
-        *,
-        client_id: str,
-        project_id: uuid.UUID,
-        work_correlation_id: uuid.UUID,
-    ) -> WorkItem:
-        """Cancel by stable key, inserting a tombstone if submission has not arrived."""
-        key_filter = (
-            (col(WorkItem.client_id) == client_id)
-            & (col(WorkItem.project_id) == project_id)
-            & (col(WorkItem.request_id) == request_id)
-        )
-        request_hash = hashlib.sha256(
-            f"cancelled-before-submit:{client_id}:{project_id}:{request_id}".encode()
-        ).hexdigest()
-        async with self._session_context() as session:
-            try:
-                result = await session.execute(select(WorkItem).where(key_filter).with_for_update())
-                item = result.scalars().first()
-                if item is None:
-                    now = datetime.now(UTC)
-                    item = WorkItem(
-                        id=uuid.uuid4(),
-                        client_id=client_id,
-                        project_id=project_id,
-                        request_id=request_id,
-                        request_hash=request_hash,
-                        work_correlation_id=work_correlation_id,
-                        status=WorkItemStatus.CANCELLED,
-                        payload={},
-                        result={"cancelled": True, "execution_started": False},
-                        created_at=now,
-                        completed_at=now,
-                    )
-                    session.add(item)
-                else:
-                    await self._request_cancel_locked(session, item)
-                await session.commit()
-                return item
-            except IntegrityError:
-                await session.rollback()
-                existing = await self.get_by_request_id(request_id, client_id=client_id, project_id=project_id)
-                if existing is None:
-                    raise
-                return await self.request_cancel(
-                    existing.id,
-                    client_id=client_id,
-                    project_id=project_id,
-                )
-            except Exception:
-                await session.rollback()
-                raise
 
     async def _request_cancel_locked(self, session: AsyncSession, item: WorkItem) -> None:
         """Apply a cancellation transition while the work-item row is locked."""
@@ -608,58 +544,7 @@ class WorkStore(StoreBase):
         item.completed_at = now
         item.claimed_at = None
         item.claim_owner_id = None
-        session.add(
-            CompletionEvent(
-                id=uuid.uuid4(),
-                work_item_id=item.id,
-                client_id=item.client_id,
-                project_id=item.project_id,
-                request_id=item.request_id,
-                state_revision=1,
-                status=WorkItemStatus.CANCELLED.value,
-                result=item.result,
-                created_at=now,
-                next_attempt_at=now,
-            )
-        )
-
-    async def get_pending_completion_events(self, *, limit: int = 100) -> list[CompletionEvent]:
-        """Load a bounded batch of due completion-event outbox rows."""
-        now = datetime.now(UTC)
-        async with self._session_context() as session:
-            result = await session.execute(
-                select(CompletionEvent)
-                .where(col(CompletionEvent.delivered_at).is_(None))
-                .where(col(CompletionEvent.next_attempt_at) <= now)
-                .order_by(col(CompletionEvent.created_at))
-                .limit(limit)
-            )
-            return list(result.scalars().all())
-
-    async def record_completion_event_attempt(
-        self,
-        event_id: uuid.UUID,
-        *,
-        delivered: bool,
-        error: str | None = None,
-        retry_after_seconds: int = 10,
-    ) -> None:
-        """Record delivery or schedule a retry for a completion event."""
-        async with self._session_context() as session:
-            try:
-                event = await session.get(CompletionEvent, event_id, with_for_update=True)
-                if event is None:
-                    return
-                event.attempts += 1
-                event.last_error = None if delivered else (error or "delivery failed")[:1000]
-                if delivered:
-                    event.delivered_at = datetime.now(UTC)
-                else:
-                    event.next_attempt_at = datetime.now(UTC) + timedelta(seconds=retry_after_seconds)
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                raise
+        await self._record_completion(session, item)
 
     async def is_target_drained(self, target_id: uuid.UUID) -> bool:
         """Return whether no owned or uncertain work remains on a target."""

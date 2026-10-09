@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  publish-image:
+  publish-images:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -21,14 +21,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/metadata-action@v5
-        id: meta
+        id: direct-meta
         with:
           images: ghcr.io/syntara-orchestration/execution-plane
           tags: |
             type=ref,event=tag
             type=sha
-      - uses: ./.github/actions/container-build
+            type=raw,value=latest
+      - uses: docker/metadata-action@v5
+        id: journal-meta
+        with:
+          images: ghcr.io/syntara-orchestration/execution-plane-journal
+          tags: |
+            type=ref,event=tag
+            type=sha
+            type=raw,value=latest
+      - name: Build and publish direct image
+        uses: ./.github/actions/container-build
         with:
           push: "true"
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.direct-meta.outputs.tags }}
+          labels: ${{ steps.direct-meta.outputs.labels }}
+      - name: Build and publish Journal image
+        uses: ./.github/actions/container-build
+        with:
+          file: Containerfile.journal
+          push: "true"
+          tags: ${{ steps.journal-meta.outputs.tags }}
+          labels: ${{ steps.journal-meta.outputs.labels }}

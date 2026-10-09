@@ -1,0 +1,166 @@
+services:
+  database:
+    image: ${POSTGRES_IMAGE:-quay.io/sclorg/postgresql-15-c9s}
+    restart: unless-stopped
+    environment:
+      POSTGRESQL_USER: ${POSTGRESQL_USER:-admin}
+      POSTGRESQL_PASSWORD: ${POSTGRESQL_PASSWORD:-admin}
+      POSTGRESQL_DATABASE: postgres
+      POSTGRESQL_ADMIN_PASSWORD: ${POSTGRESQL_ADMIN_PASSWORD:-admin}
+    volumes:
+    - ep_postgres_data:/var/lib/pgsql/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -h 127.0.0.1 -U $${POSTGRESQL_USER:-admin} -d $${POSTGRESQL_DATABASE:-postgres}
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+  database-init:
+    image: ${POSTGRES_IMAGE:-quay.io/sclorg/postgresql-15-c9s}
+    restart: unless-stopped
+    entrypoint:
+    - /bin/sh
+    - -ec
+    command:
+    - "ready=0; until [ \"$$ready\" -ge 3 ]; do\n  if psql -h database -U postgres -d postgres -c 'SELECT 1';\n\
+      \  then\n    ready=$$((ready + 1));\n    echo \"PostgreSQL accepted a connection ($$ready/3)\";\n  else\n\
+      \    ready=0;\n    echo Waiting for PostgreSQL;\n  fi;\n  sleep 2;\ndone; until psql -h database -U postgres\
+      \ -d postgres -v ep_migrator_password=\"$${EP_DB_MIGRATOR_PASSWORD}\" -v ep_runtime_password=\"$${EP_DB_RUNTIME_PASSWORD}\"\
+      \ -f /scripts/create_database.sql; do echo Retrying database bootstrap; sleep 2; done; exec tail -f /dev/null"
+    environment:
+      PGPASSWORD: ${POSTGRESQL_ADMIN_PASSWORD:-admin}
+      EP_DB_MIGRATOR_PASSWORD: ${EP_DB_MIGRATOR_PASSWORD:-ep-migrator}
+      EP_DB_RUNTIME_PASSWORD: ${EP_DB_RUNTIME_PASSWORD:-ep-runtime}
+    volumes:
+    - ./containers/postgres/create_database.sql:/scripts/create_database.sql:ro,z
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - psql -h database -U postgres -d execution_plane -c "SELECT 1"
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  migrate:
+    image: ${EP_IMAGE:-localhost/execution-plane:latest}
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Containerfile.direct
+    command:
+    - /bin/sh
+    - -ec
+    - python3 /scripts/wait_for_ep_database.py; until alembic -c alembic.ini upgrade head; do echo Retrying migrations;
+      python3 /scripts/wait_for_ep_database.py; sleep 2; done; touch /tmp/migrated; exec python3 -c "import time;
+      time.sleep(10**9)"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://execution_plane_migrator:${EP_DB_MIGRATOR_PASSWORD:-ep-migrator}@database:5432/execution_plane
+      EP_CREDENTIAL_ENCRYPTION_KEY_PATH: /run/secrets/ep/credential-encryption-key
+      WAIT_FOR_SQL: SELECT 1 FROM pg_roles WHERE rolname = 'execution_plane_runtime'
+    volumes:
+    - ./tools/wait_for_ep_database.py:/scripts/wait_for_ep_database.py:ro,z
+    - ${EP_CREDENTIAL_ENCRYPTION_KEY_FILE:-.secrets/encryption-key}:/run/secrets/ep/credential-encryption-key:ro,z
+    depends_on:
+      database-init:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - test -f /tmp/migrated
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  api:
+    image: ${EP_IMAGE:-localhost/execution-plane:latest}
+    restart: unless-stopped
+    command:
+    - /bin/sh
+    - -ec
+    - python3 /scripts/wait_for_ep_database.py && exec execution-plane-api
+    ports:
+    - 127.0.0.1:${EP_API_PUBLISH_PORT:-8001}:8443
+    environment:
+      EP_API_HOST: 0.0.0.0
+      EP_API_PORT: '8443'
+      EP_API_TLS_CERT_PATH: /run/secrets/ep-api/tls.crt
+      EP_API_TLS_KEY_PATH: /run/secrets/ep-api/tls.key
+      EP_API_TLS_CLIENT_CA_PATH: /run/secrets/ep-api/ca.pem
+      EP_DATABASE_URL: postgresql+asyncpg://execution_plane_runtime:${EP_DB_RUNTIME_PASSWORD:-ep-runtime}@database:5432/execution_plane
+      EP_CREDENTIAL_ENCRYPTION_KEY_PATH: /run/secrets/ep/credential-encryption-key
+      WAIT_FOR_ALEMBIC_HEAD: '1'
+      EP_PARTICIPANT_ID: execution-plane
+      EP_COMMAND_PEERS_PATH: /run/secrets/ep/command-peers.json
+      EP_COMMAND_SIGNING_KEY_PATH: /run/secrets/ep/ep-command.pem
+      EP_COMMAND_SIGNING_KEY_ID: ${EP_COMMAND_SIGNING_KEY_ID:-primary}
+      EP_COMMAND_TLS_CA_PATH: /run/secrets/ep-api/ca.pem
+      EP_COMMAND_TLS_CERT_PATH: /run/secrets/ep-api/tls.crt
+      EP_COMMAND_TLS_KEY_PATH: /run/secrets/ep-api/tls.key
+    volumes:
+    - ./tools/wait_for_ep_database.py:/scripts/wait_for_ep_database.py:ro,z
+    - ${EP_CREDENTIAL_ENCRYPTION_KEY_FILE:-.secrets/encryption-key}:/run/secrets/ep/credential-encryption-key:ro,z
+    - ${EP_API_TLS_CERT_FILE:-.secrets/certs/execution-plane.crt}:/run/secrets/ep-api/tls.crt:ro,z
+    - ${EP_API_TLS_KEY_FILE:-.secrets/certs/execution-plane.key}:/run/secrets/ep-api/tls.key:ro,z
+    - ${EP_API_TLS_CLIENT_CA_FILE:-.secrets/certs/ca.pem}:/run/secrets/ep-api/ca.pem:ro,z
+    - ${EP_COMMAND_PEERS_FILE:-.secrets/command-peers.json}:/run/secrets/ep/command-peers.json:ro,z
+    - ${EP_COMMAND_SIGNING_KEY_FILE:-.secrets/ep-command.pem}:/run/secrets/ep/ep-command.pem:ro,z
+    - ${EP_COMMAND_PUBLIC_KEY_FILE:-.secrets/ep-command.pub}:/run/secrets/ep/ep-command.pub:ro,z
+    - ${EP_AO_JWT_PUBLIC_KEY_FILE:-.secrets/ao-jwt-public.pem}:/run/secrets/ep/ao-jwt-public.pem:ro,z
+    depends_on:
+      migrate:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - python3
+      - -c
+      - import ssl,urllib.request; c=ssl.create_default_context(cafile='/run/secrets/ep-api/ca.pem'); c.load_cert_chain('/run/secrets/ep-api/tls.crt','/run/secrets/ep-api/tls.key');
+        urllib.request.urlopen('https://localhost:8443/healthz/ready',context=c)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      default:
+        aliases:
+        - execution-plane-api
+  worker:
+    image: ${EP_IMAGE:-localhost/execution-plane:latest}
+    restart: unless-stopped
+    command:
+    - /bin/sh
+    - -ec
+    - python3 /scripts/wait_for_ep_database.py && exec execution-plane-worker
+    environment:
+      EP_DATABASE_URL: postgresql+asyncpg://execution_plane_runtime:${EP_DB_RUNTIME_PASSWORD:-ep-runtime}@database:5432/execution_plane
+      EP_CREDENTIAL_ENCRYPTION_KEY_PATH: /run/secrets/ep/credential-encryption-key
+      EP_NODE_STARTUP_SECONDS: ${EP_NODE_STARTUP_SECONDS:-120}
+      EP_NODE_GRACE_SECONDS: ${EP_NODE_GRACE_SECONDS:-30}
+      EP_WORKLOAD_ALLOWED_EGRESS_CIDRS: ${EP_WORKLOAD_ALLOWED_EGRESS_CIDRS:-[]}
+      EP_WORKLOAD_FORBIDDEN_EGRESS_CIDRS: ${EP_WORKLOAD_FORBIDDEN_EGRESS_CIDRS:-[]}
+      WAIT_FOR_ALEMBIC_HEAD: '1'
+      EP_PARTICIPANT_ID: execution-plane
+      EP_COMMAND_PEERS_PATH: /run/secrets/ep/command-peers.json
+      EP_COMMAND_SIGNING_KEY_PATH: /run/secrets/ep/ep-command.pem
+      EP_COMMAND_SIGNING_KEY_ID: ${EP_COMMAND_SIGNING_KEY_ID:-primary}
+      EP_COMMAND_TLS_CA_PATH: /run/secrets/ep-api/ca.pem
+      EP_COMMAND_TLS_CERT_PATH: /run/secrets/ep-api/tls.crt
+      EP_COMMAND_TLS_KEY_PATH: /run/secrets/ep-api/tls.key
+    volumes:
+    - ./tools/wait_for_ep_database.py:/scripts/wait_for_ep_database.py:ro,z
+    - ${EP_CREDENTIAL_ENCRYPTION_KEY_FILE:-.secrets/encryption-key}:/run/secrets/ep/credential-encryption-key:ro,z
+    - ${EP_COMMAND_PEERS_FILE:-.secrets/command-peers.json}:/run/secrets/ep/command-peers.json:ro,z
+    - ${EP_COMMAND_SIGNING_KEY_FILE:-.secrets/ep-command.pem}:/run/secrets/ep/ep-command.pem:ro,z
+    - ${EP_COMMAND_PUBLIC_KEY_FILE:-.secrets/ep-command.pub}:/run/secrets/ep/ep-command.pub:ro,z
+    - ${EP_AO_JWT_PUBLIC_KEY_FILE:-.secrets/ao-jwt-public.pem}:/run/secrets/ep/ao-jwt-public.pem:ro,z
+    - ${EP_API_TLS_CERT_FILE:-.secrets/certs/execution-plane.crt}:/run/secrets/ep-api/tls.crt:ro,z
+    - ${EP_API_TLS_KEY_FILE:-.secrets/certs/execution-plane.key}:/run/secrets/ep-api/tls.key:ro,z
+    - ${EP_API_TLS_CLIENT_CA_FILE:-.secrets/certs/ca.pem}:/run/secrets/ep-api/ca.pem:ro,z
+    depends_on:
+      migrate:
+        condition: service_healthy
+volumes:
+  ep_postgres_data: null

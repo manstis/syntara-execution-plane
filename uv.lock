@@ -486,6 +486,7 @@ dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
     { name = "cryptography" },
+    { name = "execution-plane-client" },
     { name = "fastapi" },
     { name = "grpcio" },
     { name = "httpx" },
@@ -500,8 +501,17 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+[package.optional-dependencies]
+direct = [
+    { name = "execution-plane-transport-direct" },
+]
+journal = [
+    { name = "execution-plane-transport-journal" },
+]
+
 [package.dev-dependencies]
 dev = [
+    { name = "execution-plane-transport-journal" },
     { name = "grpcio-tools" },
     { name = "mypy" },
     { name = "pytest" },
@@ -516,6 +526,9 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.14.0" },
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "cryptography", specifier = ">=48.0.1" },
+    { name = "execution-plane-client", editable = "src/execution_plane_client" },
+    { name = "execution-plane-transport-direct", marker = "extra == 'direct'", editable = "src/execution_plane_transport_direct" },
+    { name = "execution-plane-transport-journal", marker = "extra == 'journal'", editable = "src/execution_plane_transport_journal" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "grpcio", specifier = ">=1.78.0" },
     { name = "httpx", specifier = ">=0.28.1" },
@@ -529,9 +542,11 @@ requires-dist = [
     { name = "structlog", specifier = ">=24.0.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
 ]
+provides-extras = ["direct", "journal"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "execution-plane-transport-journal", editable = "src/execution_plane_transport_journal" },
     { name = "grpcio-tools", specifier = "==1.78.0" },
     { name = "mypy", specifier = ">=1.18.0,<1.19.0" },
     { name = "pytest", specifier = ">=9.0.0,<10.0.0" },
@@ -539,6 +554,57 @@ dev = [
     { name = "pytest-timeout", specifier = ">=2.3.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.14.0,<0.14.4" },
+]
+
+[[package]]
+name = "execution-plane-client"
+version = "0.1.0"
+source = { editable = "src/execution_plane_client" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "fastapi" },
+    { name = "pyjwt", extra = ["crypto"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cryptography", specifier = ">=48.0.1" },
+    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13.0" },
+]
+
+[[package]]
+name = "execution-plane-transport-direct"
+version = "0.1.0"
+source = { editable = "src/execution_plane_transport_direct" }
+dependencies = [
+    { name = "execution-plane-client" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "execution-plane-client", specifier = ">=0.1.0,<0.2.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+]
+
+[[package]]
+name = "execution-plane-transport-journal"
+version = "0.1.0"
+source = { editable = "src/execution_plane_transport_journal" }
+dependencies = [
+    { name = "alembic" },
+    { name = "asyncpg" },
+    { name = "execution-plane-transport-direct" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", specifier = ">=1.14.0" },
+    { name = "asyncpg", specifier = ">=0.30.0" },
+    { name = "execution-plane-transport-direct", specifier = ">=0.1.0,<0.2.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
 ]
 
 [[package]]

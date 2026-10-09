@@ -1,10 +1,13 @@
 name: Build EP container image
 description: >-
-  Build the Execution Plane container image from the repository Containerfile,
+  Build the Execution Plane container image from a repository Containerfile,
   optionally pushing it to a registry. Requires the repository to be checked out
   first; when pushing, the caller must log in to the registry and supply tags.
 
 inputs:
+  file:
+    description: Containerfile used to build the image.
+    default: Containerfile.direct
   push:
     description: Whether to push the built image to the registry.
     default: "false"
@@ -21,7 +24,7 @@ runs:
     - uses: docker/build-push-action@v6
       with:
         context: .
-        file: Containerfile
+        file: ${{ inputs.file }}
         push: ${{ inputs.push }}
         tags: ${{ inputs.tags }}
         labels: ${{ inputs.labels }}

@@ -1,0 +1,16 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: execution-plane-migrate
+spec:
+  template:
+    spec:
+      containers:
+        - name: migrate
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - >-
+              alembic -c alembic.ini upgrade head &&
+              alembic -c src/execution_plane_transport_journal/alembic.ini upgrade head

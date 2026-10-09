@@ -90,7 +90,7 @@ main() {
             --help|-h)
                 echo "Usage: $0 [--force]"
                 echo ""
-                echo "Generate credential encryption and AO JWT verification keys."
+                echo "Generate encryption, EP command signing and AO assertion verification keys."
                 echo ""
                 echo "Options:"
                 echo "  --force, -f  Regenerate all keys even if they exist"
@@ -139,6 +139,16 @@ main() {
         chmod 644 "$jwt_pub"
         info "  Public key: $jwt_pub"
         info "  Point EP_AO_JWT_PUBLIC_KEY_FILE at AO's jwt-primary.pub to verify real Syntara tokens"
+    fi
+
+    if [[ ! -f "$SECRETS_DIR/ep-command.pem" || "$force" == true ]]; then
+        generate_key_pair "ep-command"
+    fi
+    # Keep the host secret directory private; the container's UID must read this bind mount.
+    chmod 644 "$SECRETS_DIR/ep-command.pem"
+    if [[ ! -f "$SECRETS_DIR/command-peers.json" ]]; then
+        cp "$PROJECT_ROOT/deploy/command-peers.example.json" "$SECRETS_DIR/command-peers.json"
+        info "Review peer URLs, certificate names and network ranges in command-peers.json before startup"
     fi
 
     # Bind-mounted files must be readable by container UID 1001. Keep private

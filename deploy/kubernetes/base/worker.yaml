@@ -18,83 +18,95 @@ spec:
         app.kubernetes.io/component: worker
     spec:
       containers:
-        - name: worker
-          image: ghcr.io/syntara-orchestration/execution-plane:latest
-          imagePullPolicy: IfNotPresent
-          command: [execution-plane-worker]
-          env:
-            - name: EP_DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: execution-plane-db
-                  key: runtime-url
-            - name: EP_CREDENTIAL_ENCRYPTION_KEY_PATH
-              value: /run/secrets/ep/credential-encryption-key
-            - name: EP_COMPLETION_CALLBACK_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: execution-plane-config
-                  key: ao-completion-callback-url
-            - name: EP_CALLBACK_CA_CERT_PATH
-              value: /run/secrets/ao/ca.pem
-            - name: EP_CALLBACK_CERT_PATH
-              value: /run/secrets/ao-callback/tls.crt
-            - name: EP_CALLBACK_KEY_PATH
-              value: /run/secrets/ao-callback/tls.key
-            - name: EP_NODE_STARTUP_SECONDS
-              valueFrom:
-                configMapKeyRef:
-                  name: execution-plane-config
-                  key: node-startup-seconds
-                  optional: true
-            - name: EP_NODE_GRACE_SECONDS
-              valueFrom:
-                configMapKeyRef:
-                  name: execution-plane-config
-                  key: node-grace-seconds
-                  optional: true
-            - name: EP_WORKLOAD_ALLOWED_EGRESS_CIDRS
-              valueFrom:
-                configMapKeyRef:
-                  name: execution-plane-config
-                  key: workload-allowed-egress-cidrs
-                  optional: true
-            - name: EP_WORKLOAD_FORBIDDEN_EGRESS_CIDRS
-              valueFrom:
-                configMapKeyRef:
-                  name: execution-plane-config
-                  key: workload-forbidden-egress-cidrs
-                  optional: true
-          volumeMounts:
-            - name: ep-key
-              mountPath: /run/secrets/ep
-              readOnly: true
-            - name: ao-auth
-              mountPath: /run/secrets/ao
-              readOnly: true
-            - name: ao-callback
-              mountPath: /run/secrets/ao-callback
-              readOnly: true
-          resources:
-            requests:
-              cpu: 250m
-              memory: 512Mi
-            limits:
-              cpu: "2"
-              memory: 2Gi
-      volumes:
+      - name: worker
+        image: ghcr.io/syntara-orchestration/execution-plane:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - execution-plane-worker
+        env:
+        - name: EP_DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: execution-plane-db
+              key: runtime-url
+        - name: EP_CREDENTIAL_ENCRYPTION_KEY_PATH
+          value: /run/secrets/ep/credential-encryption-key
+        - name: EP_NODE_STARTUP_SECONDS
+          valueFrom:
+            configMapKeyRef:
+              name: execution-plane-config
+              key: node-startup-seconds
+              optional: true
+        - name: EP_NODE_GRACE_SECONDS
+          valueFrom:
+            configMapKeyRef:
+              name: execution-plane-config
+              key: node-grace-seconds
+              optional: true
+        - name: EP_WORKLOAD_ALLOWED_EGRESS_CIDRS
+          valueFrom:
+            configMapKeyRef:
+              name: execution-plane-config
+              key: workload-allowed-egress-cidrs
+              optional: true
+        - name: EP_WORKLOAD_FORBIDDEN_EGRESS_CIDRS
+          valueFrom:
+            configMapKeyRef:
+              name: execution-plane-config
+              key: workload-forbidden-egress-cidrs
+              optional: true
+        - name: EP_PARTICIPANT_ID
+          value: execution-plane
+        - name: EP_COMMAND_PEERS_PATH
+          value: /run/secrets/ep/command-peers.json
+        - name: EP_COMMAND_SIGNING_KEY_PATH
+          value: /run/secrets/ep/ep-command.pem
+        - name: EP_COMMAND_SIGNING_KEY_ID
+          value: primary
+        - name: EP_COMMAND_TLS_CA_PATH
+          value: /run/secrets/ao/ca.pem
+        - name: EP_COMMAND_TLS_CERT_PATH
+          value: /run/secrets/ao-callback/tls.crt
+        - name: EP_COMMAND_TLS_KEY_PATH
+          value: /run/secrets/ao-callback/tls.key
+        volumeMounts:
         - name: ep-key
-          secret:
-            secretName: execution-plane-keys
-            items:
-              - key: credential-encryption-key
-                path: credential-encryption-key
+          mountPath: /run/secrets/ep
+          readOnly: true
         - name: ao-auth
-          secret:
-            secretName: execution-plane-ao-auth
-            items:
-              - key: ca.pem
-                path: ca.pem
+          mountPath: /run/secrets/ao
+          readOnly: true
         - name: ao-callback
-          secret:
-            secretName: execution-plane-callback-client
+          mountPath: /run/secrets/ao-callback
+          readOnly: true
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: '2'
+            memory: 2Gi
+      volumes:
+      - name: ep-key
+        secret:
+          secretName: execution-plane-keys
+          items:
+          - key: credential-encryption-key
+            path: credential-encryption-key
+          - key: command-peers.json
+            path: command-peers.json
+          - key: ep-command.pem
+            path: ep-command.pem
+          - key: ep-command.pub
+            path: ep-command.pub
+          - key: ao-jwt-public.pem
+            path: ao-jwt-public.pem
+      - name: ao-auth
+        secret:
+          secretName: execution-plane-ao-auth
+          items:
+          - key: ca.pem
+            path: ca.pem
+      - name: ao-callback
+        secret:
+          secretName: execution-plane-callback-client

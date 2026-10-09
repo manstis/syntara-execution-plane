@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 from typing import TYPE_CHECKING, Any
 
 import asyncpg  # type: ignore[import-untyped]
 import structlog
 
-from execution_plane.cluster.binding_reconciler import run_cluster_binding_reconciler
 from execution_plane.cluster.cluster_store import ClusterStore
+from execution_plane.commands.service import EPCommandService
 from execution_plane.config import get_ep_settings, to_asyncpg_url
 from execution_plane.drain_monitor import DrainMonitor
-from execution_plane.event_delivery import CompletionEventDelivery
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.execution_target_reconciler.adapters import build_placement_resolver
 from execution_plane.execution_target_reconciler.exceptions import UnknownBackendTypeError
@@ -34,6 +32,7 @@ from execution_plane.worker_manager.vanilla_k8s.reconciler import run_orphan_pol
 
 if TYPE_CHECKING:
     from execution_plane.config import EPSettings
+    from execution_plane_client.api import CommandRuntime
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -212,7 +211,7 @@ async def _poll_loop(
                 await asyncio.wait_for(wakeup_event.wait(), timeout=POLL_INTERVAL_SECONDS)
 
 
-async def run_worker(database_url: str) -> None:
+async def run_worker(database_url: str, command_runtime: CommandRuntime) -> None:
     """Run processing and callback delivery against the EP-owned database.
 
     Cancellation closes both the notification listener and the polling task,
@@ -224,7 +223,8 @@ async def run_worker(database_url: str) -> None:
         ClusterStore.from_database_url(database_url) as cluster_store,
         ExecutionTargetStore.from_database_url(database_url) as target_store,
     ):
-        event_delivery = CompletionEventDelivery(settings)
+        command_service = EPCommandService(command_runtime)
+        command_service.configure_store(work_store)
         workload_manager = VanillaK8sWorkerManager(target_store, cluster_store, work_store, settings)
         worker_managers = WorkerManagerRegistry()
         worker_managers.register(BackendType.VANILLA_K8S, workload_manager)
@@ -246,37 +246,11 @@ async def run_worker(database_url: str) -> None:
                     _poll_loop(work_store, target_store, worker_managers, settings, wakeup_event),
                     name="ep-poll",
                 )
-                tg.create_task(event_delivery.run(work_store), name="ep-completion-delivery")
-                tg.create_task(run_cluster_binding_reconciler(database_url), name="ep-cluster-bindings")
+                tg.create_task(command_service.run(work_store), name="ep-command-service")
                 tg.create_task(
                     run_orphan_policy_reconciler(target_store, cluster_store, work_store),
                     name="ep-k8s-policy-reconciler",
                 )
         finally:
             await drain_monitor.stop()
-            await event_delivery.close()
-
-
-async def _run() -> None:
-    settings = get_ep_settings()
-    await run_worker(settings.database_url)
-
-
-def main() -> None:
-    """Entry point for the execution-plane-worker CLI command."""
-    logging.basicConfig(level=logging.INFO)
-    structlog.configure(
-        processors=[
-            structlog.stdlib.add_log_level,
-            structlog.stdlib.add_logger_name,
-            structlog.dev.ConsoleRenderer(),
-        ],
-        wrapper_class=structlog.stdlib.BoundLogger,
-        context_class=dict,
-        logger_factory=structlog.stdlib.LoggerFactory(),
-    )
-    asyncio.run(_run())
-
-
-if __name__ == "__main__":
-    main()
+            await command_service.close()

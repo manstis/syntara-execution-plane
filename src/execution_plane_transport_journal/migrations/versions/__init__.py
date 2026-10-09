@@ -1,0 +1,1 @@
+"""Journal transport Alembic revisions."""
