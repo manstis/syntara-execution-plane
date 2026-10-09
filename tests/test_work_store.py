@@ -85,7 +85,9 @@ class _ClaimResult:
 
 
 def _store() -> WorkStore:
-    return WorkStore("postgresql+asyncpg://localhost/syntara")
+    store = WorkStore("postgresql+asyncpg://localhost/syntara")
+    store.set_completion_recorder(AsyncMock())
+    return store
 
 
 @pytest.mark.asyncio
@@ -217,9 +219,8 @@ async def test_uncertain_dispatch_records_reconciliation_callback() -> None:
     assert item.status is WorkItemStatus.RECONCILIATION_REQUIRED
     assert item.completed_at is not None
     assert item.result["error_type"] == "WorkloadOutcomeUnknownError"
-    assert session.added is not None
-    assert session.added.status == WorkItemStatus.RECONCILIATION_REQUIRED.value
-    assert session.added.result == item.result
+    assert isinstance(store._completion_recorder, AsyncMock)
+    store._completion_recorder.assert_awaited_once_with(session, item)
     assert session.commits == 1
     await store.close()
 

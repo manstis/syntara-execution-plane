@@ -31,8 +31,6 @@ COPY LICENSE /licenses/LICENSE
 COPY --from=builder /opt/app-root/src/alembic.ini ./alembic.ini
 COPY --from=builder /opt/app-root/src/src/execution_plane/migrations ./src/execution_plane/migrations
 COPY --from=builder /opt/app-root/src/.venv /opt/app-root/src/.venv
-COPY --from=builder /opt/app-root/src/alembic.ini /opt/app-root/src/alembic.ini
-COPY --from=builder /opt/app-root/src/src /opt/app-root/src/src
 
 ENV PATH="/opt/app-root/src/.venv/bin:/opt/app-root/bin:$PATH" \
     PYTHONUNBUFFERED=1 \

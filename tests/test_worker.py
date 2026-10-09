@@ -36,6 +36,9 @@ class _CompletionDelivery:
     def __init__(self, _settings: object, events: list[str]) -> None:
         self.events = events
 
+    def configure_store(self, _store: object) -> None:
+        self.events.append("delivery:configured")
+
     async def run(self, _store: object) -> None:
         self.events.append("delivery:run")
 
@@ -67,16 +70,16 @@ async def test_run_worker_owns_drain_monitor_for_the_worker_lifetime(monkeypatch
         "DrainMonitor",
         lambda target, cluster, work: _DrainMonitor(target, cluster, work, events),
     )
-    monkeypatch.setattr(worker, "CompletionEventDelivery", lambda settings: _CompletionDelivery(settings, events))
+    monkeypatch.setattr(worker, "EPCommandService", lambda settings: _CompletionDelivery(settings, events))
     monkeypatch.setattr(worker, "VanillaK8sWorkerManager", lambda *_args: object())
     monkeypatch.setattr(worker, "build_placement_resolver", lambda *_args: object())
     monkeypatch.setattr(worker, "_listen_loop", _finished_listener)
     monkeypatch.setattr(worker, "_poll_loop", _finished_poller)
-    monkeypatch.setattr(worker, "run_cluster_binding_reconciler", _finished_reconciler)
     monkeypatch.setattr(worker, "run_orphan_policy_reconciler", _finished_policy_reconciler)
 
     await worker.run_worker("postgresql+asyncpg://localhost/syntara")
 
+    assert events.index("delivery:configured") < events.index("monitor:start")
     assert events.index("monitor:start") < events.index("monitor:stop")
     assert events.index("monitor:stop") < events.index("work:stop")
 

@@ -18,14 +18,14 @@ from sqlalchemy import Table, pool, text
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlmodel import SQLModel
 
+from execution_plane_client.journal.schema import build_journal_schema
+
 if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
     from sqlalchemy.schema import SchemaItem
 
 # Import all execution_plane models so they are registered in SQLModel.metadata.
 import execution_plane.models.cluster
-import execution_plane.models.cluster_binding
-import execution_plane.models.completion_event
 import execution_plane.models.execution_target
 import execution_plane.models.work_item  # noqa: F401
 
@@ -36,7 +36,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-target_metadata = SQLModel.metadata
+target_metadata = [SQLModel.metadata, build_journal_schema(EP_SCHEMA).metadata]
 
 database_url = config.get_main_option("sqlalchemy.url") or os.environ.get("DATABASE_URL")
 if not database_url:

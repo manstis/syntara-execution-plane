@@ -2,9 +2,9 @@
 
 The Execution Plane (EP) accepts and runs work dispatched by Syntara. This repository owns the standalone HTTP API, worker package, cluster and execution-target registries, work-item persistence, migrations for the `execution_plane` PostgreSQL schema, and the service container image.
 
-Syntara owns user authorization, workflow dispatch, integrations, and the user interface. EP owns accepted work, execution state, and completion-event delivery. Temporal task tokens stay in Syntara and are not part of the EP API or schema. The first deployment may use the existing PostgreSQL server, but EP requires a distinct database and runtime role.
+Syntara owns user authorization, workflow dispatch, integrations, and the user interface. EP owns accepted work, execution state, and completion-command delivery. Temporal task tokens stay in Syntara and are not part of the EP API or schema. The first deployment may use the existing PostgreSQL server, but EP requires a distinct database and runtime role.
 
-EP is one of several Syntara repositories. [Syntara](https://github.com/syntara-orchestration/syntara) is the orchestrator that accepts user intent and dispatches work; it will take EP as a dependency, since it submits that work to the EP API. The [Syntara Plugin SDK](https://github.com/syntara-orchestration/syntara-plugin-sdk) is a firmly planned direct dependency: it provides the package the container entrypoint runs and the protobuf contract EP speaks to each node over gRPC, so it is shared by both the container images and the wire protocol. [Syntara Step Types](https://github.com/syntara-orchestration/syntara-step-types) defines the step and payload types a workload acts on; because EP routes and runs work through the gRPC contract and stays largely agnostic to the data being passed, it is only a potential dependency and may never become a required one.
+EP is one of several Syntara repositories. [Syntara](https://github.com/syntara-orchestration/syntara) is the orchestrator that accepts user intent and dispatches work; it depends on the shared execution-plane-client package to submit durable commands to EP. The [Syntara Plugin SDK](https://github.com/syntara-orchestration/syntara-plugin-sdk) is a firmly planned direct dependency: it provides the package the container entrypoint runs and the protobuf contract EP speaks to each node over gRPC, so it is shared by both the container images and the wire protocol. [Syntara Step Types](https://github.com/syntara-orchestration/syntara-step-types) defines the step and payload types a workload acts on; because EP routes and runs work through the gRPC contract and stays largely agnostic to the data being passed, it is only a potential dependency and may never become a required one.
 
 ## Requirements
 
@@ -32,32 +32,61 @@ database, and separate migration/runtime roles.
 Local work execution still requires a reachable Kubernetes/OpenShift target and
 an image tag available to that cluster; there is no in-process script fallback.
 
-Run the API directly with the EP database URL and AO's public service-token verification key:
+The API accepts actions only through `POST /v1/commands`. Cluster registration,
+execution-target registration, provisioning, updates, draining and cancellation
+all use durable command messages. Scoped GET endpoints expose commands, child
+outcomes, capabilities, work items, clusters and execution targets. A transport
+202 confirms committed receipt; the receiver separately sends `command.accepted`.
+Completion is another command with its own acceptance. Provider uncertainty is
+reported as `outcome_unknown` and never triggers automatic execution replay.
+
+API and worker use the same peer trust file, database, journal encryption key and
+EP signing identity. `deploy/command-peers.example.json` documents the trust-file
+shape. Review each peer's canonical URLs, issuer/audience, verification key IDs,
+client/project grants, certificate common name and permitted destination CIDRs.
+The API requires a CA-verified client certificate **and** a short-lived assertion
+bound to the exact message or GET target. Redirects and unregistered destinations
+are rejected. `EP_COMMAND_OPTIONS` can override bounded polling/lease/retry values
+as JSON; provider timeout/maximum attempts belong to the immutable work command.
+
+For paired development, generate AO's certificates first, then issue EP's
+certificate under that CA without copying its private key:
 
 ```bash
-EP_DATABASE_URL=postgresql+asyncpg://user:password@localhost/execution_plane \
-EP_CREDENTIAL_ENCRYPTION_KEY=<base64url-encoded-32-byte-key> \
-EP_AO_JWT_PUBLIC_KEY_PATH=/run/secrets/ao-jwt-public.pem \
-EP_AO_JWT_ISSUER=https://syntara.example.com \
-EP_API_TLS_CERT_PATH=/run/secrets/ep-api/tls.crt \
-EP_API_TLS_KEY_PATH=/run/secrets/ep-api/tls.key \
-EP_API_TLS_CLIENT_CA_PATH=/run/secrets/ep-api/ca.pem \
-uv run execution-plane-api
+./tools/generate_secrets.sh
+uv run python tools/generate_certs.py \
+  --ca-cert ../syntara/backend/.secrets/certs/ca.pem \
+  --ca-key ../syntara/backend/.secrets/certs/ca.key
 ```
 
-The API exposes versioned OpenAPI at `/docs`, authenticated work submission, scoped status reads and cancellation under `/v1`, plus liveness and readiness endpoints. Work moves through `pending`, `claimed`, and `dispatched`; cancellation of dispatched work first returns `cancel_requested`, and only becomes `cancelled` after the gRPC invocation is confirmed stopped. `reconciliation_required` makes an uncertain external outcome visible instead of launching a duplicate. Cancellation by stable request ID creates a tombstone when it races ahead of submission, preventing a late request from starting work. Configure EP-owned HTTPS with `EP_API_PORT`, `EP_API_TLS_CERT_PATH`, and `EP_API_TLS_KEY_PATH`; `EP_API_TLS_CLIENT_CA_PATH` makes the API validate client certificates when provided. Kubernetes manifests expect a TLS certificate in `execution-plane-api-tls` whose SAN matches the service DNS name. The first API release also requires signed AO service tokens with an audience, client ID, project ID, and operation scopes.
+The example peer URLs use `execution-plane-api` and `syntara` on one container
+network. For separate compose networks, configure reachable HTTPS URLs and matching
+certificate SANs in both trust files. Export EP's public command key to AO; never
+copy EP's private signing key there. All previous `/events`, work-item write and
+cluster-binding write APIs are replaced.
 
-Run the worker with the same EP database and a fixed AO completion callback URL:
+For direct processes, set `EP_DATABASE_URL`, `EP_CREDENTIAL_ENCRYPTION_KEY_PATH`,
+`EP_COMMAND_PEERS_PATH`, `EP_COMMAND_SIGNING_KEY_PATH`, and the API TLS certificate,
+key and client-CA paths, then run `uv run execution-plane-api` or
+`uv run execution-plane-worker`. The worker can use `EP_COMMAND_TLS_CA_PATH`,
+`EP_COMMAND_TLS_CERT_PATH`, and `EP_COMMAND_TLS_KEY_PATH` for its outbound identity.
+The worker installs the completion recorder before polling and journals provider
+results before cleanup. Each participant has one `exchange_journal` table for
+command intent, status, resource revisions, cancellation and recovery. The shared
+handling worker also schedules observations of pending drains and cancellations.
+Work items, clusters and execution targets retain provider state. Command GET
+responses read the journal; resource GET responses expose scoped provider state.
+Delivery and handling wake on transactional PostgreSQL notifications in both
+directions, with polling retained for recovery. The shared runtime reserves one
+autocommit listener connection from its database pool; provide capacity for that
+connection alongside normal worker transactions.
 
-```bash
-EP_DATABASE_URL=postgresql+asyncpg://user:password@localhost/execution_plane \
-EP_CREDENTIAL_ENCRYPTION_KEY=<base64url-encoded-32-byte-key> \
-EP_COMPLETION_CALLBACK_URL=https://syntara.example.com/api/execution_plane/v1/events \
-EP_CALLBACK_CA_CERT_PATH=/run/secrets/s2s-ca.pem \
-EP_CALLBACK_CERT_PATH=/run/secrets/execution-plane.crt \
-EP_CALLBACK_KEY_PATH=/run/secrets/execution-plane.key \
-uv run execution-plane-worker
-```
+The single-journal migration transfers the former command records, resource
+revision reservations and cancellation intents into journal entries before
+dropping their tables. It preserves deletion markers and pending observations,
+and refuses a cutover if responsibility cannot be represented safely. Downgrade
+requires an empty journal; restore a pre-cutover backup for populated databases.
+Earlier migrations remove obsolete completion-event and cluster-binding tables.
 
 Apply the EP migrations independently from Syntara's migration chain:
 
@@ -99,7 +128,7 @@ API trust roots and submitted invocation payloads are encrypted at rest by EP.
 
 The Kubernetes base manifests are in `deploy/kubernetes/base`; provide the
 database URLs, AES key, AO JWT verification key, callback mTLS material, server
-TLS certificate, and AO callback/JWT issuer URLs as Kubernetes Secrets and a
+TLS identities, command signing keys and peer trust file as Kubernetes Secrets and a
 ConfigMap before applying them. AO supplies the node image reference in the
 request and must pin it by digest. EP applies a NetworkPolicy before creating the
 Job; it denies ingress and permits only DNS plus configured egress CIDRs. Verify
@@ -111,3 +140,34 @@ The management image runs as UID 1001. Its default command starts the controller
 ## Ownership
 
 Use this repository for EP worker, registry, migration, and placement changes. Make coordinated API, authorization, integration, and workflow changes in [Syntara](https://github.com/syntara-orchestration/syntara), and link the changes across pull requests.
+
+## Shared client and paired builds
+
+`src/execution_plane_client` is a separate Python project. EP depends on it through
+`tool.uv.sources`; AO resolves the same source from a sibling checkout:
+
+```text
+workspace/
+  syntara/backend/
+  syntara-execution-plane/src/execution_plane_client/
+```
+
+Build the independent artifacts with `uv build src/execution_plane_client`, and
+build the service with `uv build`. The service source archive carries the declared
+client source path, while each wheel contains only its own package. The existing
+Containerfile builds one EP image with both distributions installed non-editably;
+there is no separate client image or service. AO's backend image accepts a named
+`ep_client_source` context pointing only at this client project.
+
+AO owns the CI source pin in `backend/ep-client-source.json` and the matching
+Hermeto archive entry. Its `tools.ci.pin_ep_client_source` command generates an
+exact source asset from a committed EP revision and records the actual checksum.
+The normal repository publication workflow must make both revision and exact
+asset reachable; local implementation does not imply that remote CI was verified.
+See the sibling AO backend README for pinning and offline build commands.
+
+For a single Compose stack, AO's compose file uses the separately built EP image
+and generated AO/EP peer registrations. For separate stacks, share a trusted CA
+and reachable network explicitly, and review the URLs/network grants in each
+`command-peers.json`. AO's default JWT signing key ID is `orchestrator-primary`;
+EP's independent command signing key defaults to `primary`.

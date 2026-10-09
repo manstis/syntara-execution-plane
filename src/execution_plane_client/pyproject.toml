@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "execution-plane-client"
+version = "0.1.0"
+description = "Durable bilateral command exchange for execution-plane participants"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "asyncpg>=0.30.0",
+    "cryptography>=48.0.1",
+    "fastapi>=0.115.0",
+    "httpx>=0.28.1",
+    "PyJWT[crypto]>=2.13.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "sqlmodel>=0.0.22",
+]
+
+[tool.hatch.build.targets.wheel]
+include = ["/*.py", "/py.typed", "/commands/**", "/journal/**", "/workers/**"]
+
+[tool.hatch.build.targets.wheel.sources]
+"" = "execution_plane_client"
+
+[tool.hatch.build]
+dev-mode-dirs = [".."]
+
+[tool.hatch.build.targets.sdist]
+include = ["/*.py", "/py.typed", "/commands/**", "/journal/**", "/workers/**", "/pyproject.toml", "/README.md", "/LICENSE"]

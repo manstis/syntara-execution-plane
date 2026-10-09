@@ -11,7 +11,7 @@ AO validates the script configuration, chooses a digest-pinned image, and
 builds the versioned node invocation. It submits
 `{invocation, image, output_config}` to EP's authenticated HTTP API. EP owns
 the accepted WorkItem, attempt state, encrypted invocation payload, result,
-and completion outbox in its separate database. AO never imports EP stores and
+and command journal in its separate database. AO never imports EP stores and
 does not connect to the EP database.
 
 The EP worker invokes the node SDK through the gRPC protocol vendored in
@@ -48,7 +48,7 @@ checks its Job owner UID, and forwards the gRPC stream to that Pod.
 
 The Job provisions a worker only. It does not define WorkItem completion,
 failure, or cancellation semantics. EP commits a received result and its
-completion event before asking Kubernetes to remove the exclusively owned
+completion command before asking Kubernetes to remove the exclusively owned
 cold-start Job. Cleanup state is tracked separately (`pending`, `complete`,
 `deferred`, or `failed`), and an aged-policy reconciler removes orphaned
 NetworkPolicies after confirming the corresponding Job and Pods are gone. A
@@ -63,7 +63,7 @@ claim owner and generation. A failure is automatically requeued only when EP
 has evidence that Execute was not submitted. Once Execute may have crossed the
 gRPC boundary, loss of the result becomes `reconciliation_required`; EP never
 allocates a second worker and automatically reruns that attempt. EP emits that
-state through its completion outbox so AO fails the activity with
+state through its completion command journal so AO fails the activity with
 `WorkloadOutcomeUnknownError` instead of leaving it waiting indefinitely. The
 WorkItem remains visible for operator investigation; callback delivery does not
 claim that execution stopped.

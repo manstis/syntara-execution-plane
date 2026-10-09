@@ -1,5 +1,8 @@
 # Execution Plane service-isolation decisions to revisit
 
+This document records the pre-handshake implementation. Its callback/outbox
+descriptions are superseded by [the durable command integration](integration.md).
+
 Updated 6 October 2026 for EP PR #1 and AO PR #728. These decisions describe
 the first isolated release. This EP file is canonical; the AO and step-types
 copies link back here so future edits can be made in one place.

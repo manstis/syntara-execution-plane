@@ -1,5 +1,8 @@
 # Combined AO + EP Kind demo: setup record
 
+This document records the pre-handshake implementation. Its callback/outbox
+descriptions are superseded by [the durable command integration](integration.md).
+
 **Status:** the script happy path was exercised against the current AO and EP
 migration branches on 6 October 2026. AO and EP used separate databases on one
 PostgreSQL server; AO submitted through EP's API, and EP dispatched a

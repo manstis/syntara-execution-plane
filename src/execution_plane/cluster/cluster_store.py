@@ -13,6 +13,7 @@ from execution_plane.models.execution_target import ExecutionTarget, TargetStatu
 from execution_plane.store_base import StoreBase
 
 if TYPE_CHECKING:
+    import builtins
     import uuid
 
 
@@ -71,10 +72,10 @@ class ClusterStore(StoreBase):
         async with self._session_context() as session:
             try:
                 session.add(cluster)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(cluster)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def get(self, cluster_id: uuid.UUID, *, include_secret: bool = False) -> Cluster | None:
@@ -125,10 +126,10 @@ class ClusterStore(StoreBase):
                 cluster.project_ids = project_ids
                 cluster.ca_certificate = ca_certificate
                 cluster.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(cluster)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def list(self, *, status: ClusterStatus | None = None, enabled: bool | None = None) -> list[Cluster]:
@@ -142,7 +143,7 @@ class ClusterStore(StoreBase):
             result = await session.execute(statement)
             return [self._without_secret(cluster) for cluster in result.scalars().all()]
 
-    async def update(
+    async def update(  # noqa: C901 - Apply optional fields without changing existing store semantics.
         self,
         cluster_id: uuid.UUID,
         *,
@@ -151,6 +152,11 @@ class ClusterStore(StoreBase):
         endpoint: str | None = None,
         api_key: str | None = None,
         ca_certificate: str | None = None,
+        clear_ca_certificate: bool = False,
+        labels: dict[str, str] | None = None,
+        project_ids: builtins.list[uuid.UUID] | None = None,
+        set_project_ids: bool = False,
+        source_revision: int | None = None,
     ) -> Cluster:
         """Update mutable cluster fields."""
         async with self._session_context() as session:
@@ -166,12 +172,20 @@ class ClusterStore(StoreBase):
                     cluster.api_key = api_key
                 if ca_certificate is not None:
                     cluster.ca_certificate = ca_certificate
+                if clear_ca_certificate:
+                    cluster.ca_certificate = None
+                if labels is not None:
+                    cluster.labels = labels
+                if set_project_ids:
+                    cluster.project_ids = project_ids
+                if source_revision is not None:
+                    cluster.source_revision = source_revision
                 cluster.updated_by = updated_by
                 cluster.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(cluster)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def reactivate(
@@ -183,6 +197,7 @@ class ClusterStore(StoreBase):
         api_key: str | None = None,
         ca_certificate: str | None = None,
         labels: dict[str, str] | None = None,
+        status: ClusterStatus = ClusterStatus.ACTIVE,
     ) -> Cluster:
         """Re-enable a DRAINING cluster and transition it back to ACTIVE."""
         async with self._session_context() as session:
@@ -191,7 +206,7 @@ class ClusterStore(StoreBase):
                 if cluster is None:
                     raise ClusterNotFoundError(cluster_id)  # noqa: TRY301
                 cluster.enabled = True
-                cluster.status = ClusterStatus.ACTIVE
+                cluster.status = status
                 cluster.status_message = None
                 if endpoint is not None:
                     cluster.endpoint = endpoint
@@ -203,10 +218,10 @@ class ClusterStore(StoreBase):
                     cluster.labels = labels
                 cluster.updated_by = updated_by
                 cluster.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(cluster)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def record_discovery_state(
@@ -229,10 +244,10 @@ class ClusterStore(StoreBase):
                 cluster.status_message = status_message
                 cluster.updated_by = updated_by
                 cluster.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(cluster)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def mark_drain_failed(
@@ -252,10 +267,10 @@ class ClusterStore(StoreBase):
                 cluster.status_message = status_message
                 cluster.updated_by = updated_by
                 cluster.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(cluster)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def request_delete(self, cluster_id: uuid.UUID, updated_by: uuid.UUID) -> Cluster:
@@ -278,10 +293,10 @@ class ClusterStore(StoreBase):
                     target.status = TargetStatus.DRAINING
                     target.updated_by = updated_by
                     target.updated_at = now
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(cluster)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def finalize_delete(self, cluster_id: uuid.UUID) -> None:
@@ -299,9 +314,9 @@ class ClusterStore(StoreBase):
                 if result.scalars().all():
                     return
                 await session.delete(cluster)
-                await session.commit()
+                await self._commit(session)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     @staticmethod

@@ -31,6 +31,7 @@ class StoreBase:
         self._session_factory: async_sessionmaker[AsyncSession] | None = None
         self._engine: AsyncEngine | None = None
         self._owns_engine = False
+        self._owns_transaction = True
 
         if session is not None:
             return
@@ -52,6 +53,32 @@ class StoreBase:
     def from_session(cls, session: AsyncSession) -> Self:
         """Create a store borrowing a request-scoped session."""
         return cls(session=session)
+
+    @classmethod
+    def from_transaction(cls, session: AsyncSession) -> Self:
+        """Join a caller-owned transaction; mutations flush but never commit it."""
+        store = cls(session=session)
+        store._owns_transaction = False
+        return store
+
+    async def _commit(self, session: AsyncSession) -> None:
+        if self._owns_transaction:
+            await session.commit()
+        else:
+            await session.flush()
+
+    async def _rollback(self, session: AsyncSession) -> None:
+        if self._owns_transaction:
+            await session.rollback()
+
+    @asynccontextmanager
+    async def _recoverable_insert(self, session: AsyncSession) -> AsyncGenerator[None, None]:
+        """Contain a deduplication race without aborting a borrowed transaction."""
+        if self._owns_transaction:
+            yield
+        else:
+            async with session.begin_nested():
+                yield
 
     @classmethod
     def from_engine(cls, engine: AsyncEngine) -> Self:

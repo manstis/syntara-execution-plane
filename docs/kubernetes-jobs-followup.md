@@ -12,7 +12,7 @@ the generated Pod by its Job label, verifies its owner UID, and opens the
 authenticated gRPC port-forward. Only the node protocol carries application
 inputs and returned output.
 
-After a result frame arrives, EP persists it and its completion outbox before
+After a result frame arrives, EP persists it and its completion command journal before
 deleting the exclusively owned Job with foreground propagation. Cleanup state
 is recorded separately. If the controller loses ownership after Execute may
 have been submitted, it leaves the WorkItem in reconciliation and does not

@@ -32,7 +32,7 @@ VALIDITY_DAYS = 365
 
 # (filename, common_name, dns_sans) — dns_sans are compose service names.
 SERVICE_CERTS = [
-    ("execution-plane", "execution-plane.ao.svc", ["api"]),
+    ("execution-plane", "execution-plane.ao.svc", ["api", "execution-plane-api", "host.containers.internal"]),
 ]
 
 
@@ -182,6 +182,8 @@ def _chmod_public_certs() -> None:
 def main() -> None:
     """Generate self-signed CA and API TLS certificates for local development."""
     parser = argparse.ArgumentParser(description="Generate TLS certificates for local development")
+    parser.add_argument("--ca-cert", type=Path, help="Issue under an existing development CA certificate")
+    parser.add_argument("--ca-key", type=Path, help="Existing development CA private key (read only)")
     parser.add_argument("--force", "-f", action="store_true", help="Regenerate all certificates")
     args = parser.parse_args()
 
@@ -191,6 +193,30 @@ def main() -> None:
 
     ca_pem = CERTS_DIR / "ca.pem"
     ca_key_path = CERTS_DIR / "ca.key"
+
+    if bool(args.ca_cert) != bool(args.ca_key):
+        parser.error("--ca-cert and --ca-key must be supplied together")
+    external_marker = CERTS_DIR / ".external-ca"
+    if args.ca_cert:
+        ca_cert = x509.load_pem_x509_certificate(args.ca_cert.read_bytes())
+        key = serialization.load_pem_private_key(args.ca_key.read_bytes(), password=None)
+        if not isinstance(key, rsa.RSAPrivateKey):
+            parser.error("The development CA key must be RSA")
+        if key.public_key().public_numbers() != ca_cert.public_key().public_numbers():
+            parser.error("The CA certificate and key do not match")
+        if ca_pem.exists() and ca_pem.read_bytes() != args.ca_cert.read_bytes() and not args.force:
+            parser.error("Changing the development CA requires --force")
+        _write_cert(ca_pem, ca_cert)
+        external_marker.touch()
+        for filename, cn, sans in SERVICE_CERTS if args.force else _missing_service_certs():
+            generate_service_cert(key, ca_cert, filename, cn, sans)
+        _chmod_public_certs()
+        print("[INFO] EP certificates issued under the supplied CA; its private key was not copied")
+        return
+    if external_marker.exists() and not args.force:
+        parser.error("This checkout uses an external CA; supply --ca-cert and --ca-key again")
+    if args.force:
+        external_marker.unlink(missing_ok=True)
 
     if args.force or not ca_pem.is_file() or not ca_key_path.is_file():
         print("[INFO] Generating CA certificate...")

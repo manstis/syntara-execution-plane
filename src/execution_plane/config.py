@@ -7,9 +7,11 @@ import ipaddress
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, Field, computed_field, model_validator
+from pydantic import Field, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
+
+from execution_plane_client.configuration import ExchangeOptions
 
 _AES_256_KEY_BYTES = 32
 
@@ -28,22 +30,22 @@ class EPSettings(BaseSettings):
     # has a separate DATABASE_URL input for the one-off migration job.
     database_url: str = Field(validation_alias="EP_DATABASE_URL")
 
+    participant_id: str = Field(default="execution-plane", validation_alias="EP_PARTICIPANT_ID")
+    command_peers_path: str | None = Field(default=None, validation_alias="EP_COMMAND_PEERS_PATH")
+    command_signing_key_path: str | None = Field(default=None, validation_alias="EP_COMMAND_SIGNING_KEY_PATH")
+    command_signing_key_id: str = Field(default="primary", validation_alias="EP_COMMAND_SIGNING_KEY_ID")
+    command_tls_ca_path: str | None = Field(default=None, validation_alias="EP_COMMAND_TLS_CA_PATH")
+    command_tls_cert_path: str | None = Field(default=None, validation_alias="EP_COMMAND_TLS_CERT_PATH")
+    command_tls_key_path: str | None = Field(default=None, validation_alias="EP_COMMAND_TLS_KEY_PATH")
+    command_options: ExchangeOptions = Field(default_factory=ExchangeOptions, validation_alias="EP_COMMAND_OPTIONS")
+    journal_encryption_key_id: str = Field(default="primary", validation_alias="EP_JOURNAL_ENCRYPTION_KEY_ID")
+    journal_decryption_keys: dict[str, str] = Field(
+        default_factory=dict, validation_alias="EP_JOURNAL_DECRYPTION_KEYS", repr=False
+    )
+
     node_startup_seconds: int = Field(default=120, validation_alias="EP_NODE_STARTUP_SECONDS", ge=1)
     node_grace_seconds: int = Field(default=30, validation_alias="EP_NODE_GRACE_SECONDS", ge=1)
 
-    ao_jwt_public_key_path: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("EP_AO_JWT_PUBLIC_KEY_PATH", "AO_JWT_PUBLIC_KEY_PATH"),
-    )
-    ao_jwt_issuer: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("EP_AO_JWT_ISSUER", "AO_JWT_ISSUER"),
-    )
-    service_jwt_audience: str = Field(
-        default="execution-plane",
-        validation_alias=AliasChoices("EP_SERVICE_JWT_AUDIENCE", "SERVICE_JWT_AUDIENCE"),
-    )
-    ao_client_id: str = Field(default="syntara-orchestration", validation_alias="EP_AO_CLIENT_ID")
     api_host: str = Field(default="127.0.0.1", validation_alias="EP_API_HOST")
     api_port: int = Field(default=8001, validation_alias="EP_API_PORT")
     api_tls_cert_path: str | None = Field(default=None, validation_alias="EP_API_TLS_CERT_PATH")
@@ -55,11 +57,6 @@ class EPSettings(BaseSettings):
         validation_alias="EP_CREDENTIAL_ENCRYPTION_KEY_PATH",
     )
     dispatch_retry_backoff_seconds: float = Field(default=5.0, validation_alias="EP_DISPATCH_RETRY_BACKOFF_SECONDS")
-    completion_callback_url: str | None = Field(default=None, validation_alias="EP_COMPLETION_CALLBACK_URL")
-    completion_callback_ca_cert_path: str | None = Field(default=None, validation_alias="EP_CALLBACK_CA_CERT_PATH")
-    completion_callback_cert_path: str | None = Field(default=None, validation_alias="EP_CALLBACK_CERT_PATH")
-    completion_callback_key_path: str | None = Field(default=None, validation_alias="EP_CALLBACK_KEY_PATH")
-    completion_callback_timeout_seconds: float = Field(default=10.0, validation_alias="EP_CALLBACK_TIMEOUT_SECONDS")
     workload_allowed_egress_cidrs: list[str] = Field(
         default_factory=list,
         validation_alias="EP_WORKLOAD_ALLOWED_EGRESS_CIDRS",

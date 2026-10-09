@@ -24,6 +24,8 @@ jobs:
       - run: uv run ruff format --check src tests
       - run: uv run mypy --strict src
       - run: uv run pytest
+      - run: uv build src/execution_plane_client --out-dir dist/client
+      - run: uv build --out-dir dist/service
 
   # Regenerates openapi.yaml and fails if the committed file differs.
   # To fix: run `uv run python tools/export_openapi.py` and commit the result.
