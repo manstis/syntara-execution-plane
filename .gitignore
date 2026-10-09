@@ -16,3 +16,6 @@ htmlcov/
 .scannerwork/
 .env
 .secrets/
+.worktrees/
+.vscode/
+docs/superpowers/

@@ -33,6 +33,7 @@ class WorkExecute(CommandPayload):
     command_type: ClassVar[str] = "work.execute"
 
     image: Annotated[StrictStr, Field(min_length=1, max_length=2048)]
+    selectors: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     invocation: NodeInvocation = Field(repr=False)
     output_config: dict[str, str] | None = None
     workload_type: Literal["script"] = "script"

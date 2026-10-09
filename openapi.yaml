@@ -1159,6 +1159,11 @@ components:
           maxLength: 2048
           minLength: 1
           title: Image
+        selectors:
+          additionalProperties:
+            type: string
+          type: object
+          title: Selectors
         invocation:
           $ref: '#/components/schemas/NodeInvocation'
         output_config:

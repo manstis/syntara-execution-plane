@@ -9,6 +9,7 @@ from execution_plane.execution_target_reconciler.exceptions import UnknownBacken
 if TYPE_CHECKING:
     from execution_plane.execution_target_reconciler.reconciler import ExecutionTargetReconciler
     from execution_plane.execution_target_reconciler.types import (
+        ClusterSnapshot,
         ExecutionTargetSnapshot,
         ReconcileResult,
         WorkRequirements,
@@ -51,6 +52,15 @@ class PlacementResolver:
     async def resolve(self, requirements: WorkRequirements) -> ReconcileResult:
         """Return the eligible ExecutionTarget set. Does not pick a winner."""
         return await self._reconciler.resolve(requirements)
+
+    async def target_is_eligible(
+        self,
+        cluster: ClusterSnapshot,
+        target: ExecutionTargetSnapshot,
+        requirements: WorkRequirements,
+    ) -> bool:
+        """Evaluate current snapshots for a target already chosen by the scheduler."""
+        return await self._reconciler.target_is_eligible(cluster, target, requirements)
 
     def worker_manager_for(self, target: ExecutionTargetSnapshot) -> WorkerManager:
         """Return the WorkerManager for this target's backend. Configuration error if missing."""

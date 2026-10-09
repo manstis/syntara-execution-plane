@@ -189,6 +189,7 @@ def build_payload(
     timeout_seconds: int,
     environment: dict[str, str],
     image: str | None = None,
+    selectors: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the versioned node invocation the Kubernetes runner dispatches."""
     inputs: dict[str, Any] = {"language": language, "code": code}
@@ -206,6 +207,7 @@ def build_payload(
             "max_output_bytes": 10**4,
         },
         "image": image or default_node_image(),
+        "selectors": selectors or {},
         "output_config": {"stdout": "stdout", "stderr": "stderr", "exit_code": "exit_code"},
     }
 

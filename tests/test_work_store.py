@@ -153,8 +153,8 @@ async def test_is_target_drained_checks_claimed_and_dispatched_work() -> None:
 
 
 @pytest.mark.asyncio
-async def test_claim_one_assigns_an_eligible_target_in_the_claim_transaction() -> None:
-    """A claimed item must remain visible to target draining until execution completes."""
+async def test_reserve_one_claims_pending_work_without_choosing_target() -> None:
+    """A reserved item stays visible to draining while worker-side placement runs."""
     store = _store()
     item = WorkItem(
         id=uuid.uuid4(),
@@ -162,21 +162,19 @@ async def test_claim_one_assigns_an_eligible_target_in_the_claim_transaction() -
         status=WorkItemStatus.PENDING,
         created_at=datetime.now(UTC),
     )
-    target_id = uuid.uuid4()
     session = _Session()
-    session.execute.side_effect = [_ClaimResult(None), _ClaimResult(item), _ScalarResult(target_id)]
+    session.execute.side_effect = [_ClaimResult(None), _ClaimResult(item)]
     store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
 
-    claimed = await store.claim_one()
+    claimed = await store.reserve_one()
 
     assert claimed is item
-    assert claimed.execution_target_id == target_id
+    assert claimed.execution_target_id is None
     assert claimed.status is WorkItemStatus.CLAIMED
     assert claimed.claimed_at is not None
+    assert claimed.claim_owner_id is not None
+    assert claimed.claim_generation == 1
     assert session.commits == 2
-    target_statement = session.execute.await_args_list[2].args[0]
-    assert target_statement._for_update_arg is not None
-    assert target_statement._for_update_arg.skip_locked is True
     await store.close()
 
 

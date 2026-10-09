@@ -15,14 +15,16 @@ from sqlalchemy import and_, case, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col
 
-from execution_plane.models.cluster import Cluster, ClusterStatus
+from execution_plane.models.cluster import Cluster
 from execution_plane.models.completion_event import CompletionEvent
-from execution_plane.models.execution_target import ExecutionTarget, TargetStatus
+from execution_plane.models.execution_target import ExecutionTarget
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
 from execution_plane.store_base import StoreBase
 from execution_plane.store_errors import StaleClaimError
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 _NOTIFY_CHANNEL = "execution_plane_work_items"
@@ -102,8 +104,8 @@ class WorkStore(StoreBase):
             )
             return list(result.scalars().all())
 
-    async def claim_one(self) -> WorkItem | None:
-        """Claim queued work or safely recover a pre-dispatch claim lease."""
+    async def reserve_one(self) -> WorkItem | None:
+        """Reserve queued work for worker-side placement resolution."""
         lease_expiry = datetime.now(UTC) - timedelta(seconds=60)
         async with self._session_context() as session:
             try:
@@ -159,25 +161,6 @@ class WorkStore(StoreBase):
                 item = result.scalars().first()
                 if item is None:
                     return None
-                # Keep an existing assignment while recovering a leased item. New
-                # work currently uses the first active project-eligible target; the
-                # placement resolver is not yet wired into this queue selector.
-                if item.execution_target_id is None:
-                    target_result = await session.execute(
-                        select(col(ExecutionTarget.id))
-                        .join(Cluster, col(Cluster.id) == col(ExecutionTarget.cluster_id))
-                        .where(col(ExecutionTarget.enabled).is_(True))
-                        .where(col(ExecutionTarget.status) == TargetStatus.ACTIVE)
-                        .where(col(Cluster.enabled).is_(True))
-                        .where(col(Cluster.status) == ClusterStatus.ACTIVE)
-                        .order_by(col(ExecutionTarget.is_default).desc(), col(ExecutionTarget.id))
-                        .limit(1)
-                        .with_for_update(skip_locked=True, of=ExecutionTarget)
-                    )
-                    target_id = target_result.scalar_one_or_none()
-                    if target_id is None:
-                        return None
-                    item.execution_target_id = target_id
                 if item.status is WorkItemStatus.PENDING:
                     item.status = WorkItemStatus.CLAIMED
                 item.claimed_at = datetime.now(UTC)
@@ -185,6 +168,68 @@ class WorkStore(StoreBase):
                 item.claim_generation += 1
                 await session.commit()
                 return item
+            except Exception:
+                await session.rollback()
+                raise
+
+    async def assign_target(
+        self,
+        item_id: uuid.UUID,
+        target_id: uuid.UUID,
+        *,
+        claim_owner_id: uuid.UUID,
+        claim_generation: int,
+        eligibility: Callable[[Cluster, ExecutionTarget], Awaitable[bool]],
+    ) -> WorkItem | None:
+        """Finalize a reserved claim with a still-eligible target."""
+        async with self._session_context() as session:
+            try:
+                item = await session.get(WorkItem, item_id, with_for_update=True)
+                if item is None:
+                    raise WorkItemNotFoundError(item_id)  # noqa: TRY301
+                self._validate_claim(item, claim_owner_id, claim_generation)
+                if item.status is not WorkItemStatus.CLAIMED or item.execution_target_id is not None:
+                    return None
+                target_result = await session.execute(
+                    select(ExecutionTarget, Cluster)
+                    .join(Cluster, col(Cluster.id) == col(ExecutionTarget.cluster_id))
+                    .where(col(ExecutionTarget.id) == target_id)
+                    .with_for_update(skip_locked=True, of=(ExecutionTarget, Cluster))
+                )
+                assignment = target_result.first()
+                if assignment is None:
+                    return None
+                target, cluster = assignment
+                if not await eligibility(cluster, target):
+                    return None
+                item.execution_target_id = target.id
+                await session.commit()
+                return item
+            except Exception:
+                await session.rollback()
+                raise
+
+    async def release_claim(
+        self,
+        item_id: uuid.UUID,
+        *,
+        claim_owner_id: uuid.UUID,
+        claim_generation: int,
+    ) -> bool:
+        """Return an unassigned reservation to the pending queue."""
+        async with self._session_context() as session:
+            try:
+                item = await session.get(WorkItem, item_id, with_for_update=True)
+                if item is None:
+                    raise WorkItemNotFoundError(item_id)  # noqa: TRY301
+                self._validate_claim(item, claim_owner_id, claim_generation)
+                if item.status is not WorkItemStatus.CLAIMED or item.execution_target_id is not None:
+                    return False
+                item.status = WorkItemStatus.PENDING
+                item.claimed_at = None
+                item.claim_owner_id = None
+                await session.commit()
+                return True
             except Exception:
                 await session.rollback()
                 raise
@@ -431,6 +476,7 @@ class WorkStore(StoreBase):
                     )
                 elif item.status is WorkItemStatus.DISPATCHED:
                     item.status = WorkItemStatus.PENDING
+                    item.execution_target_id = None
                     item.claimed_at = None
                     item.claim_owner_id = None
                 await session.commit()
