@@ -51,8 +51,9 @@ class CommandCatalog:
         except KeyError:
             raise UnsupportedCommand from None
 
-    def validate(self, message: MessageEnvelope) -> None:
-        """Validate the payload and completion parent before handling."""
+    def validate(self, message: MessageEnvelope) -> CommandPayload:
+        """Validate the payload and completion parent, returning the typed payload."""
         definition = self.definition(message.command.command_type, message.command.command_revision)
-        definition.payload_schema.model_validate(message.command.payload)
+        payload = definition.payload_schema.model_validate(message.command.payload)
         definition.payload_schema.validate_parent(message.command.parent_command_id)
+        return payload

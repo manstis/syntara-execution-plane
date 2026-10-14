@@ -29,7 +29,7 @@ def test_registry_validates_and_advertises_only_installed_handlers():
     from execution_plane_client.registry import CommandRegistry
 
     class Handler:
-        async def handle(self, message, context) -> None:
+        async def handle(self, message, payload, context) -> None:
             return None
 
     registry = CommandRegistry()

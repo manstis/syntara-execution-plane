@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Protocol
 
+from execution_plane_client.commands.base import CommandPayload
 from execution_plane_client.protocol import MessageEnvelope, ResourceReference
 
 
@@ -16,6 +17,6 @@ class HandlingResult:
 class CommandHandler[ContextT](Protocol):
     """A participant supplies its own authenticated execution context."""
 
-    async def handle(self, message: MessageEnvelope, context: ContextT) -> HandlingResult:
-        """Apply domain effects; the protocol makes no persistence guarantees."""
+    async def handle(self, message: MessageEnvelope, payload: CommandPayload, context: ContextT) -> HandlingResult:
+        """Apply domain effects using the catalog's validated payload and original envelope."""
         ...

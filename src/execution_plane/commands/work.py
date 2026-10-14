@@ -2,7 +2,9 @@
 
 from execution_plane.commands.context import EPCommandContext
 from execution_plane.work_store import WorkStore
+from execution_plane_client.commands.base import CommandPayload
 from execution_plane_client.commands.work import WorkExecute
+from execution_plane_client.errors import UnsupportedCommand
 from execution_plane_client.handlers import HandlingResult
 from execution_plane_client.protocol import MessageEnvelope, ResourceReference
 
@@ -10,9 +12,12 @@ from execution_plane_client.protocol import MessageEnvelope, ResourceReference
 class WorkCommandHandler:
     """Persist work, without retaining the command envelope."""
 
-    async def handle(self, message: MessageEnvelope, context: EPCommandContext) -> HandlingResult:
+    async def handle(
+        self, message: MessageEnvelope, payload: CommandPayload, context: EPCommandContext
+    ) -> HandlingResult:
         """Use the caller's command UUID as the work item's stable UUID."""
-        payload = WorkExecute.model_validate(message.command.payload)
+        if not isinstance(payload, WorkExecute):
+            raise UnsupportedCommand
         item = await WorkStore.from_engine(context.engine).dispatch(
             client_id=context.client_id,
             item_id=message.command_id,

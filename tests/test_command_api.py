@@ -1,13 +1,19 @@
 """The replacement API accepts commands and exposes only domain resource state."""
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
 
 from execution_plane.api.auth import ServiceIdentity, get_service_identity
 from execution_plane.api.main import create_app
+from execution_plane.work_store import WorkStore
+from execution_plane_client.commands.base import CommandPayload
+from execution_plane_client.commands.control import CancelCommand
+from execution_plane_client.commands.work import WorkExecute
 
 
 def command_message(kind="command.cancel", payload=None):
@@ -43,6 +49,58 @@ def test_only_command_mutations_and_resource_queries_are_exposed():
     for resource in ("work-items", "clusters", "execution-targets"):
         assert f"/v1/{resource}" in paths
         assert f"/v1/{resource}/{{resource_id}}" in paths
+
+
+@pytest.mark.parametrize("command_type", [WorkExecute, CancelCommand])
+async def test_ingress_handles_work_with_one_payload_conversion(monkeypatch, command_type):
+    work_id = uuid4()
+    payload = (
+        {
+            "image": "node:test",
+            "invocation": {
+                "inputs": {},
+                "credentials": {},
+                "workflow_context": {},
+                "settings": {},
+                "timeout_seconds": 60,
+                "max_output_bytes": 1024,
+            },
+        }
+        if command_type is WorkExecute
+        else {"target_command_id": str(work_id)}
+    )
+    message = command_message(command_type.command_type, payload)
+    if command_type is WorkExecute:
+        work_id = UUID(message["command_id"])
+    store = AsyncMock(spec=WorkStore)
+    store.dispatch.return_value = store.request_cancel.return_value = SimpleNamespace(id=work_id)
+    monkeypatch.setattr(WorkStore, "from_engine", lambda _engine: store)
+    parsed_payloads = []
+    validate = command_type.model_validate
+
+    def track_validation(value) -> CommandPayload:
+        parsed = validate(value)
+        parsed_payloads.append(parsed)
+        return parsed
+
+    monkeypatch.setattr(command_type, "model_validate", track_validation)
+    app = create_app()
+    app.state.ep_engine = object()
+    app.dependency_overrides[get_service_identity] = lambda: ServiceIdentity(
+        client_id="ao", scopes=frozenset({command_type.command_type})
+    )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://ep.test") as client:
+        response = await client.post("/v1/commands", json=message)
+    assert response.status_code == 202
+    assert response.json()["message_id"] == message["message_id"]
+    assert response.json()["resource"]["resource_id"] == str(work_id)
+    assert len(parsed_payloads) == 1
+    if command_type is WorkExecute:
+        store.dispatch.assert_awaited_once_with(
+            client_id="ao", item_id=work_id, payload=parsed_payloads[0].model_dump(mode="json")
+        )
+    else:
+        store.request_cancel.assert_awaited_once_with(work_id, client_id="ao")
 
 
 @pytest.mark.parametrize(

@@ -46,5 +46,24 @@ plus `message_id` if it differs. `parent_command_id` and `sequence` are optional
 `Completion` requires a parent work command UUID. Source, destination and client
 scope are always supplied by the caller; the helper does not authenticate them.
 
+## Handling messages
+
+After parsing a `MessageEnvelope`, validate it through the catalog and pass the
+returned typed payload to the registered handler:
+
+```python
+payload = catalog.validate(message)
+handler = registry.get(message.command.command_type, message.command.command_revision)
+result = await handler.handle(message, payload, context)
+```
+
+Handlers implement `handle(message, payload, context)`. The catalog selects the
+payload model by command type and revision, validates it and checks required
+parent correlation. Handlers narrow the payload to their supported command
+types without parsing the raw dictionary again. The original envelope remains
+available for identity and correlation; partial-update payloads retain which
+fields were supplied. Authentication, authorization and domain-state validation
+(including validation after merging a patch) remain participant responsibilities.
+
 Build with `uv build src/execution_plane_client`. See the service's integration
 documentation for command examples and the current HTTP authentication contract.

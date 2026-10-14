@@ -129,7 +129,7 @@ def create_app() -> FastAPI:  # noqa: C901
             data.extend(chunk)
         try:
             message = MessageEnvelope.model_validate(strict_json(bytes(data)))
-            catalog.validate(message)
+            payload = catalog.validate(message)
             handler = registry.get(message.command.command_type, message.command.command_revision)
             if (
                 message.scope.client_id != identity.client_id
@@ -138,7 +138,9 @@ def create_app() -> FastAPI:  # noqa: C901
                 or message.command.command_type not in identity.scopes
             ):
                 raise HTTPException(status_code=403, detail="Command is not authorized")
-            result = await handler.handle(message, EPCommandContext(identity.client_id, request.app.state.ep_engine))
+            result = await handler.handle(
+                message, payload, EPCommandContext(identity.client_id, request.app.state.ep_engine)
+            )
         except (DuplicateWorkItemError, DefaultExecutionTargetError, ClusterNotAvailableError):
             raise HTTPException(status_code=409, detail="Resource state conflicts with the request") from None
         except (ValidationError, ValueError, UnsupportedCommand):

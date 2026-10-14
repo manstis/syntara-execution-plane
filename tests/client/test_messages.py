@@ -90,7 +90,9 @@ def test_typed_commands_supply_type_revision_and_consistent_envelope(module, nam
     assert message.sequence == 0
     assert "command_type" not in message.command.payload
     round_trip = MessageEnvelope.model_validate_json(message.model_dump_json())
-    CommandCatalog().validate(round_trip)
+    parsed = CommandCatalog().validate(round_trip)
+    assert type(parsed) is type(command)
+    assert parsed == command
 
 
 def test_completion_preserves_explicit_identity_and_time_across_reconstruction():
@@ -128,7 +130,10 @@ def test_cluster_patch_keeps_explicit_null_and_omits_unchanged_fields():
         client_id="ao",
     )
     assert message.command.payload == {"resource_key": RESOURCE_ID, "desired_revision": 2, "ca_certificate": None}
-    CommandCatalog().validate(message)
+    parsed = CommandCatalog().validate(message)
+    assert isinstance(parsed, clusters.ClusterUpdate)
+    assert parsed.resource_key == UUID(RESOURCE_ID)
+    assert parsed.model_fields_set == {"resource_key", "desired_revision", "ca_certificate"}
 
 
 def test_target_patch_retains_discriminator_without_resetting_placement_defaults():
@@ -140,7 +145,10 @@ def test_target_patch_retains_discriminator_without_resetting_placement_defaults
         "resource_id": RESOURCE_ID,
         "placement": {"type": "kubernetes", "namespace": "new"},
     }
-    CommandCatalog().validate(message)
+    parsed = CommandCatalog().validate(message)
+    assert isinstance(parsed, targets.TargetUpdate)
+    assert isinstance(parsed.placement, targets.KubernetesPlacement)
+    assert parsed.placement.model_fields_set == {"type", "namespace"}
 
 
 def test_message_can_have_an_explicit_transport_identity():
