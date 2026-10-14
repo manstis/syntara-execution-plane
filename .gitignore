@@ -8,6 +8,11 @@ build/
 dist/
 *.egg-info/
 coverage.xml
+.coverage
+.coverage.*
+coverage-artifacts/
+pytest-results*.xml
 htmlcov/
+.scannerwork/
 .env
 .secrets/

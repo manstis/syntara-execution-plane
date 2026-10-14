@@ -1,10 +1,24 @@
-.PHONY: install test test-integration lint format typecheck openapi migrate image secrets certs setup compose-up compose-down generate-token kind-target submit-work
+.PHONY: install test test-coverage coverage-combine test-integration lint format typecheck openapi migrate image secrets certs setup compose-up compose-down generate-token kind-target submit-work
+
+TEST_ARGS ?= --ignore=tests/integration
+COVERAGE_FILES ?= coverage-artifacts/*/.coverage
+JUNIT_FILES ?= coverage-artifacts/*/pytest-results.xml
 
 install:
 	uv sync --locked --all-groups
 
 test:
 	uv run pytest
+
+test-coverage:
+	uv run pytest $(TEST_ARGS) --cov --cov-report=term-missing --cov-report=xml:coverage.xml --junitxml=pytest-results.xml
+
+coverage-combine:
+	uv run coverage combine --keep $(COVERAGE_FILES)
+	uv run coverage xml -o coverage.xml
+	uv run coverage html -d htmlcov
+	uv run coverage report
+	uv run python -m junitparser merge -- $(JUNIT_FILES) pytest-results.xml
 
 test-integration:
 	uv run pytest tests/integration -m integration -v

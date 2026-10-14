@@ -22,6 +22,19 @@ uv run ruff format --check src tests
 uv run mypy --strict src
 ```
 
+`make test-coverage` runs unit tests and measures both `execution_plane` and
+`execution_plane_client`, including branch coverage. It prints a coverage summary
+and writes `coverage.xml`, `.coverage`, and `pytest-results.xml`. Override
+`TEST_ARGS` to select another suite, for example
+`make test-coverage TEST_ARGS='tests/client -v'`.
+
+CI collects reports from the unit, PostgreSQL, and Kubernetes test jobs, then runs
+`make coverage-combine` to merge the raw coverage data and JUnit results. The
+`ep-coverage-combined` artifact contains the combined XML reports and an HTML
+coverage report. To combine downloaded reports locally, extract each test job's
+artifact into its own directory under `coverage-artifacts/` and run the same
+target.
+
 For a separate local EP database, copy `.env.example` to `.env` if you need to
 override defaults. Generate local secrets and TLS material first (`make setup`,
 or `./tools/generate_secrets.sh` and `uv run python tools/generate_certs.py`).
