@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Submit a script work item to the local Execution Plane API.
 
-Submission requires an AO service token with `work-items:submit` and a
-`project_id` claim. `all_projects` is not enough.
+Submission requires an AO service token with `work.execute` and `work-items:read`.
 
 Usage:
     uv run python tools/submit_work_item.py
@@ -23,7 +22,6 @@ from typing import Any
 from execution_plane.work_item_client import (
     DEFAULT_API_URL,
     DEFAULT_NODE_IMAGE,
-    DEFAULT_PROJECT_ID,
     build_payload,
     default_api_url,
     default_node_image,
@@ -81,8 +79,7 @@ def main() -> int:
         epilog=__doc__,
     )
     parser.add_argument("--api-url", default=os.environ.get("EP_API_URL", DEFAULT_API_URL))
-    parser.add_argument("--project-id", type=uuid.UUID, default=DEFAULT_PROJECT_ID)
-    parser.add_argument("--id", dest="item_id", type=uuid.UUID, help="Work item UUID; defaults to a new UUID")
+    parser.add_argument("--work-id", type=uuid.UUID, help="Work UUID; defaults to a new UUID")
     parser.add_argument("--language", choices=("python", "bash"), default=DEFAULT_LANGUAGE)
     parser.add_argument("--code", help="Inline script source")
     parser.add_argument("--code-file", type=Path, help="Read script source from a file")
@@ -104,7 +101,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        item_id = args.item_id or uuid.uuid4()
+        work_id = args.work_id or uuid.uuid4()
         if args.payload_file is not None:
             payload = load_payload_file(args.payload_file)
         else:
@@ -115,12 +112,12 @@ def main() -> int:
                 environment=parse_env_pairs(args.env_pairs),
                 image=args.image or default_node_image(),
             )
-        print(f"[INFO] Submitting id={item_id} project_id={args.project_id}")
-        token = ep_service_token(args.project_id)
+        print(f"[INFO] Submitting work_id={work_id}")
+        token = ep_service_token()
         item = submit_work_item(
             args.api_url or default_api_url(),
             token,
-            item_id=item_id,
+            work_id=work_id,
             payload=payload,
         )
         if args.wait:
@@ -128,9 +125,9 @@ def main() -> int:
             item = wait_for_work_item(
                 args.api_url,
                 token,
-                item_id,
+                work_id,
                 wait_budget,
-                on_status=lambda status: print(f"[INFO] Work item {item_id} status: {status}"),
+                on_status=lambda status: print(f"[INFO] Work item {work_id} status: {status}"),
             )
     except (FileNotFoundError, RuntimeError, TimeoutError, TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

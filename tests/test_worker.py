@@ -67,7 +67,7 @@ async def test_run_worker_owns_drain_monitor_for_the_worker_lifetime(monkeypatch
         "DrainMonitor",
         lambda target, cluster, work: _DrainMonitor(target, cluster, work, events),
     )
-    monkeypatch.setattr(worker, "CompletionEventDelivery", lambda settings: _CompletionDelivery(settings, events))
+    monkeypatch.setattr(worker, "CompletionNotifier", lambda settings: _CompletionDelivery(settings, events))
     monkeypatch.setattr(worker, "VanillaK8sWorkerManager", lambda *_args: object())
     monkeypatch.setattr(worker, "build_placement_resolver", lambda *_args: object())
     monkeypatch.setattr(worker, "_listen_loop", _finished_listener)

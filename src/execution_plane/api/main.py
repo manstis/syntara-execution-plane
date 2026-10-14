@@ -1,45 +1,45 @@
-"""Standalone HTTP entry point for the Execution Plane service."""
+"""EP-owned command ingress and authenticated domain resource queries."""
 
 from __future__ import annotations
 
+import json
 import logging
 import ssl
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated
-from uuid import UUID  # noqa: TC003 — FastAPI resolves this annotation at runtime
+from uuid import UUID  # noqa: TC003
 
 import structlog
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
-from execution_plane.api.auth import ServiceIdentity, require_scope
-from execution_plane.api.schemas import (
-    CapabilitiesResponse,
-    ClusterBindingRead,
-    ClusterBindingUpsert,
-    ExecutionTargetRead,
-    WorkItemRead,
-    WorkItemSubmit,
-)
+from execution_plane.api.auth import ServiceIdentity, get_service_identity, require_scope
+from execution_plane.api.openapi import configure_command_openapi
+from execution_plane.api.schemas import ClusterRead, ExecutionTargetRead, WorkItemRead
+from execution_plane.commands.clusters import ResourceNotFoundError
+from execution_plane.commands.context import EPCommandContext
+from execution_plane.commands.queries import EPResourceQueries
+from execution_plane.commands.registry import build_ep_registry
 from execution_plane.config import get_ep_settings
-from execution_plane.execution_target.execution_target_registry import ExecutionTargetRegistry
-from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
-from execution_plane.models.cluster_binding import ClusterBinding
-from execution_plane.work_store import (
-    DuplicateWorkItemError,
-    WorkItemNotFoundError,
-    WorkStore,
+from execution_plane.execution_target.execution_target_store import (
+    ClusterNotAvailableError,
+    DefaultExecutionTargetError,
 )
+from execution_plane.work_store import DuplicateWorkItemError, WorkItemNotFoundError
+from execution_plane_client.catalog import CommandCatalog
+from execution_plane_client.errors import ProtocolConflict, UnsupportedCommand
+from execution_plane_client.protocol import CapabilitiesRead, MessageEnvelope, TransportReceipt
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from execution_plane.models.work_item import WorkItem
-
 logger = structlog.stdlib.get_logger(__name__)
+_BODY_LIMIT = 1024 * 1024
 
 
 @asynccontextmanager
@@ -56,14 +56,43 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await engine.dispose()
 
 
-def create_app() -> FastAPI:  # noqa: C901, PLR0915
-    """Create the standalone, versioned Execution Plane API."""
+def strict_json(data: bytes) -> object:
+    """Reject duplicate keys and non-finite constants without echoing input."""
+
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in items:
+            if key in result:
+                error = "Duplicate JSON object key"
+                raise ValueError(error)
+            result[key] = value
+        return result
+
+    def constant(_value: str) -> object:
+        error = "Non-finite JSON value"
+        raise ValueError(error)
+
+    try:
+        return json.loads(data, object_pairs_hook=pairs, parse_constant=constant)
+    except RecursionError:
+        error = "JSON nesting is too deep"
+        raise ValueError(error) from None
+
+
+def create_app() -> FastAPI:  # noqa: C901
+    """Replace legacy mutations with commands; expose only resource state."""
     app = FastAPI(
         title="Execution Plane API",
         version="1.0.0",
-        description="Accept, track, and retrieve execution work independently of Syntara workflows.",
         lifespan=lifespan,
+        description="Command submission and client-scoped execution resources. No command history is retained.",
     )
+    registry = build_ep_registry()
+    catalog = CommandCatalog()
+
+    @app.exception_handler(ResourceNotFoundError)
+    async def missing(_request: Request, _error: ResourceNotFoundError) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": "Resource not found"})
 
     @app.get("/healthz/live", include_in_schema=False)
     async def live() -> dict[str, str]:
@@ -75,209 +104,104 @@ def create_app() -> FastAPI:  # noqa: C901, PLR0915
         try:
             async with engine.connect() as connection:
                 await connection.execute(text("SELECT 1"))
-        except Exception as exc:
-            logger.warning("EP readiness check failed", error=str(exc))
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database unavailable") from exc
+        except Exception:  # noqa: BLE001 - Readiness must not expose database exception details.
+            raise HTTPException(status_code=503, detail="Database unavailable") from None
         return {"status": "ready"}
 
-    @app.get("/v1/capabilities", response_model=CapabilitiesResponse)
-    async def capabilities() -> CapabilitiesResponse:
-        return CapabilitiesResponse()
+    @app.get("/v1/capabilities", response_model=CapabilitiesRead)
+    async def capabilities(
+        _identity: Annotated[ServiceIdentity, Depends(require_scope("capabilities:read"))],
+    ) -> CapabilitiesRead:
+        return registry.capabilities()
 
-    @app.post("/v1/work-items", response_model=WorkItemRead, status_code=status.HTTP_202_ACCEPTED)
-    async def submit_work_item(
-        request: Request,
-        submission: WorkItemSubmit,
-        identity: Annotated[ServiceIdentity, Depends(require_scope("work-items:submit"))],
-    ) -> WorkItemRead:
-        store = WorkStore.from_engine(request.app.state.ep_engine)
-        payload = {"workload_type": submission.workload_type, **submission.payload}
+    @app.post(
+        "/v1/commands",
+        response_model=TransportReceipt,
+        status_code=202,
+    )
+    async def receive_command(
+        request: Request, identity: Annotated[ServiceIdentity, Depends(get_service_identity)]
+    ) -> TransportReceipt:
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) + len(chunk) > _BODY_LIMIT:
+                raise HTTPException(status_code=413, detail="Command too large")
+            data.extend(chunk)
         try:
-            item = await store.dispatch(
-                client_id=identity.client_id,
-                item_id=submission.id,
-                payload=payload,
-            )
-        except DuplicateWorkItemError as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-        return await _work_item_read(store, item)
+            message = MessageEnvelope.model_validate(strict_json(bytes(data)))
+            catalog.validate(message)
+            handler = registry.get(message.command.command_type, message.command.command_revision)
+            if (
+                message.scope.client_id != identity.client_id
+                or message.source_id != identity.client_id
+                or message.destination_id != get_ep_settings().service_jwt_audience
+                or message.command.command_type not in identity.scopes
+            ):
+                raise HTTPException(status_code=403, detail="Command is not authorized")
+            result = await handler.handle(message, EPCommandContext(identity.client_id, request.app.state.ep_engine))
+        except (DuplicateWorkItemError, DefaultExecutionTargetError, ClusterNotAvailableError):
+            raise HTTPException(status_code=409, detail="Resource state conflicts with the request") from None
+        except (ValidationError, ValueError, UnsupportedCommand):
+            raise HTTPException(status_code=422, detail="Invalid or unsupported command") from None
+        except (ProtocolConflict, IntegrityError):
+            raise HTTPException(status_code=409, detail="Resource state conflicts with the request") from None
+        except WorkItemNotFoundError:
+            raise HTTPException(status_code=404, detail="Resource not found") from None
+        return TransportReceipt(message_id=message.message_id, resource=result.resource)
 
     @app.get("/v1/work-items", response_model=list[WorkItemRead])
-    async def list_work_items(
+    async def work_items(
         request: Request,
         identity: Annotated[ServiceIdentity, Depends(require_scope("work-items:read"))],
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
     ) -> list[WorkItemRead]:
-        store = WorkStore.from_engine(request.app.state.ep_engine)
-        items = await store.list_for_client(client_id=identity.client_id, limit=limit)
-        return [WorkItemRead.model_validate(item) for item in items]
+        return await EPResourceQueries(request.app.state.ep_engine, identity.client_id).work_items(limit)
 
-    @app.get(
-        "/v1/execution-targets",
-        response_model=list[ExecutionTargetRead],
-        dependencies=[Depends(require_scope("execution-targets:read"))],
-    )
-    async def list_execution_targets(
+    @app.get("/v1/work-items/{resource_id}", response_model=WorkItemRead)
+    async def work_item(
         request: Request,
-        limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    ) -> list[ExecutionTargetRead]:
-        registry = ExecutionTargetRegistry(ExecutionTargetStore.from_engine(request.app.state.ep_engine))
-        targets = await registry.list(limit=limit)
-        return [ExecutionTargetRead.model_validate(target) for target in targets]
-
-    @app.put(
-        "/v1/cluster-bindings/{source_integration_id}",
-        response_model=ClusterBindingRead,
-        status_code=status.HTTP_202_ACCEPTED,
-    )
-    async def upsert_cluster_binding(
-        request: Request,
-        source_integration_id: UUID,
-        desired: ClusterBindingUpsert,
-        identity: Annotated[ServiceIdentity, Depends(require_scope("cluster-bindings:write"))],
-    ) -> ClusterBindingRead:
-        """Persist a versioned desired state for the independently managed cluster."""
-        if not desired.endpoint.startswith("https://"):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Cluster endpoints require HTTPS",
-            )
-        if desired.insecure_skip_tls_verify:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Cluster TLS verification cannot be disabled; provide the cluster CA certificate instead",
-            )
-        if desired.enabled and not desired.credential:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Enabled cluster bindings require a credential",
-            )
-        async with request.app.state.ep_session_factory() as session:
-            key = (identity.client_id, source_integration_id)
-            binding = await session.get(ClusterBinding, key, with_for_update=True)
-            now = datetime.now(UTC)
-            if binding is not None and desired.revision < binding.revision:
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stale integration revision")
-            if binding is not None and desired.revision == binding.revision:
-                same_state = (
-                    binding.name == desired.name
-                    and binding.endpoint == desired.endpoint
-                    and binding.namespace == desired.namespace
-                    and binding.credential == desired.credential
-                    and binding.ca_certificate == desired.ca_certificate
-                    and binding.project_ids == desired.project_ids
-                    and binding.labels == desired.labels
-                    and binding.enabled == desired.enabled
-                )
-                if not same_state:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail="Revision conflicts with stored desired state",
-                    )
-            elif binding is None:
-                binding = ClusterBinding(
-                    client_id=identity.client_id,
-                    source_integration_id=source_integration_id,
-                    revision=desired.revision,
-                    name=desired.name,
-                    endpoint=desired.endpoint,
-                    namespace=desired.namespace,
-                    credential=desired.credential,
-                    ca_certificate=desired.ca_certificate,
-                    project_ids=desired.project_ids,
-                    labels=desired.labels,
-                    enabled=desired.enabled,
-                    created_at=now,
-                    updated_at=now,
-                )
-                session.add(binding)
-            else:
-                binding.revision = desired.revision
-                binding.name = desired.name
-                binding.endpoint = desired.endpoint
-                binding.namespace = desired.namespace
-                binding.credential = desired.credential
-                binding.ca_certificate = desired.ca_certificate
-                binding.project_ids = desired.project_ids
-                binding.labels = desired.labels
-                binding.enabled = desired.enabled
-                binding.status = "pending"
-                binding.status_message = None
-                binding.updated_at = now
-            await session.commit()
-            return _cluster_binding_read(binding)
-
-    @app.get("/v1/cluster-bindings/{source_integration_id}", response_model=ClusterBindingRead)
-    async def get_cluster_binding(
-        request: Request,
-        source_integration_id: UUID,
-        identity: Annotated[ServiceIdentity, Depends(require_scope("cluster-bindings:read"))],
-    ) -> ClusterBindingRead:
-        """Return safe desired and observed state for a source integration."""
-        async with request.app.state.ep_session_factory() as session:
-            binding = await session.get(ClusterBinding, (identity.client_id, source_integration_id))
-        if binding is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cluster binding not found")
-        return _cluster_binding_read(binding)
-
-    @app.get("/v1/work-items/{work_id}", response_model=WorkItemRead)
-    async def get_work_item(
-        request: Request,
-        work_id: UUID,
+        resource_id: UUID,
         identity: Annotated[ServiceIdentity, Depends(require_scope("work-items:read"))],
     ) -> WorkItemRead:
-        store = WorkStore.from_engine(request.app.state.ep_engine)
-        item = await store.get(work_id, client_id=identity.client_id)
-        if item is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work item not found")
-        return await _work_item_read(store, item)
+        return await EPResourceQueries(request.app.state.ep_engine, identity.client_id).work_item(resource_id)
 
-    @app.post("/v1/work-items/{work_id}/cancel", response_model=WorkItemRead)
-    async def cancel_work_item(
+    @app.get("/v1/clusters", response_model=list[ClusterRead])
+    async def clusters(
         request: Request,
-        work_id: UUID,
-        identity: Annotated[ServiceIdentity, Depends(require_scope("work-items:cancel"))],
-    ) -> WorkItemRead:
-        store = WorkStore.from_engine(request.app.state.ep_engine)
-        try:
-            item = await store.request_cancel(work_id, client_id=identity.client_id)
-        except WorkItemNotFoundError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work item not found") from exc
-        return await _work_item_read(store, item)
+        identity: Annotated[ServiceIdentity, Depends(require_scope("clusters:read"))],
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    ) -> list[ClusterRead]:
+        return await EPResourceQueries(request.app.state.ep_engine, identity.client_id).clusters(limit)
 
-    @app.get("/v1/", include_in_schema=False)
-    async def root() -> Response:
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    @app.get("/v1/clusters/{resource_id}", response_model=ClusterRead)
+    async def cluster(
+        request: Request,
+        resource_id: UUID,
+        identity: Annotated[ServiceIdentity, Depends(require_scope("clusters:read"))],
+    ) -> ClusterRead:
+        return await EPResourceQueries(request.app.state.ep_engine, identity.client_id).cluster(resource_id)
 
+    @app.get("/v1/execution-targets", response_model=list[ExecutionTargetRead])
+    async def targets(
+        request: Request,
+        identity: Annotated[ServiceIdentity, Depends(require_scope("execution-targets:read"))],
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    ) -> list[ExecutionTargetRead]:
+        return await EPResourceQueries(request.app.state.ep_engine, identity.client_id).targets(limit)
+
+    @app.get("/v1/execution-targets/{resource_id}", response_model=ExecutionTargetRead)
+    async def target(
+        request: Request,
+        resource_id: UUID,
+        identity: Annotated[ServiceIdentity, Depends(require_scope("execution-targets:read"))],
+    ) -> ExecutionTargetRead:
+        return await EPResourceQueries(request.app.state.ep_engine, identity.client_id).target(resource_id)
+
+    configure_command_openapi(app, catalog, registry.capabilities())
     return app
 
 
 app = create_app()
-
-
-def _cluster_binding_read(binding: ClusterBinding) -> ClusterBindingRead:
-    """Convert an ORM binding into a credential-free API response."""
-    return ClusterBindingRead(
-        client_id=binding.client_id,
-        source_integration_id=binding.source_integration_id,
-        desired_revision=binding.revision,
-        observed_revision=binding.observed_revision,
-        cluster_id=binding.cluster_id,
-        status=binding.status,
-        status_message=binding.status_message,
-        enabled=binding.enabled,
-        updated_at=binding.updated_at,
-    )
-
-
-async def _work_item_read(store: WorkStore, item: WorkItem) -> WorkItemRead:
-    """Add stable outbox identity needed to reconcile a missed callback."""
-    response = WorkItemRead.model_validate(item)
-    event = await store.get_completion_event(response.id)
-    if event is not None:
-        response.completion_event_id = event.id
-        response.state_revision = event.state_revision
-    return response
 
 
 def main() -> None:

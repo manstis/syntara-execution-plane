@@ -11,3 +11,18 @@ def test_database_stores_share_the_store_lifecycle_base() -> None:
     assert issubclass(WorkStore, StoreBase)
     assert issubclass(ClusterStore, StoreBase)
     assert issubclass(ExecutionTargetStore, StoreBase)
+
+
+async def test_borrowed_transaction_flushes_without_committing_or_rolling_back():
+    """A compound domain handler owns its transaction boundary."""
+    from unittest.mock import AsyncMock
+
+    from execution_plane.store_base import StoreBase
+
+    session = AsyncMock()
+    store = StoreBase.from_transaction(session)
+    await store._commit(session)
+    await store._rollback(session)
+    session.flush.assert_awaited_once()
+    session.commit.assert_not_awaited()
+    session.rollback.assert_not_awaited()

@@ -35,7 +35,7 @@ async def get_service_identity(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
     settings: Annotated[EPSettings, Depends(get_ep_settings)],
 ) -> ServiceIdentity:
-    """Validate signature, issuer, audience, client, and signed project grant."""
+    """Validate signature, issuer, audience and the enabled service client."""
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Service bearer token required")
     if not settings.ao_jwt_public_key_path or not settings.ao_jwt_issuer:

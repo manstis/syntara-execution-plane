@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Create a local kind cluster and register it as an Execution Plane target.
 
-The Execution Plane has no public "create execution target" API. AO registers
-compute by PUTing a cluster binding; the EP worker reconciles that into a
+AO registers compute using a cluster command; the EP worker reconciles its binding into a
 Cluster plus a default vanilla-Kubernetes ExecutionTarget.
 
 This script:
@@ -35,6 +34,7 @@ import sys
 import tempfile
 import time
 import uuid
+from datetime import UTC, datetime
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -42,6 +42,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from execution_plane.work_item_client import ep_service_token
+from execution_plane_client.protocol import Command, CommandScope, MessageEnvelope
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CLUSTER_NAME = "ep-kind"
@@ -290,7 +291,7 @@ def wait_for_ep_api(api_url: str) -> None:
 
 def next_revision(api_url: str, token: str, source_integration_id: uuid.UUID) -> int:
     """Return the next cluster-binding revision for this local kind identity."""
-    status, body = ep_request("GET", f"{api_url}/v1/cluster-bindings/{source_integration_id}", token)
+    status, body = ep_request("GET", f"{api_url}/v1/clusters/{source_integration_id}", token)
     if status == HTTPStatus.NOT_FOUND:
         return 1
     if status >= HTTPStatus.BAD_REQUEST:
@@ -310,10 +311,11 @@ def upsert_binding(
     credential: str,
     ca_certificate: str,
 ) -> dict[str, Any]:
-    """PUT versioned desired state for the kind cluster."""
+    """Submit versioned desired state for the kind cluster."""
     revision = next_revision(api_url, token, source_integration_id)
     body = {
-        "revision": revision,
+        "resource_key": str(source_integration_id),
+        "desired_revision": revision,
         "name": name,
         "endpoint": endpoint,
         "namespace": namespace,
@@ -323,20 +325,42 @@ def upsert_binding(
         "labels": {"execution-plane.syntara.io/local": "kind"},
     }
     print(f"[INFO] Upserting cluster binding {source_integration_id} revision {revision}")
-    status, payload = ep_request("PUT", f"{api_url}/v1/cluster-bindings/{source_integration_id}", token, body)
+    command_id = uuid.uuid4()
+    client_id = os.environ.get("EP_AO_CLIENT_ID", "syntara-orchestration")
+    envelope = MessageEnvelope(
+        message_id=uuid.uuid4(),
+        command_id=command_id,
+        source_id=client_id,
+        destination_id=os.environ.get("EP_SERVICE_JWT_AUDIENCE", "execution-plane"),
+        scope=CommandScope(client_id=client_id),
+        command=Command(
+            command_id=command_id,
+            command_type="cluster.provision",
+            command_revision=1,
+            occurred_at=datetime.now(UTC),
+            payload=body,
+        ),
+    )
+    status, payload = ep_request("POST", f"{api_url}/v1/commands", token, envelope.model_dump(mode="json"))
     if status >= HTTPStatus.BAD_REQUEST:
         msg = f"Cluster binding upsert failed ({status}): {payload}"
         raise RuntimeError(msg)
+    if not isinstance(payload, dict):
+        msg = f"Unexpected cluster command response: {payload}"
+        raise TypeError(msg)
     return payload
 
 
 def wait_for_binding(api_url: str, token: str, source_integration_id: uuid.UUID, timeout: int) -> dict[str, Any]:
     """Poll until the worker has reconciled the binding to ready."""
     deadline = time.time() + timeout
-    url = f"{api_url}/v1/cluster-bindings/{source_integration_id}"
+    url = f"{api_url}/v1/clusters/{source_integration_id}"
     while time.time() < deadline:
         status, payload = ep_request("GET", url, token)
         if status == HTTPStatus.OK:
+            if not isinstance(payload, dict):
+                msg = f"Unexpected cluster response: {payload}"
+                raise TypeError(msg)
             binding_status = payload.get("status")
             print(f"[INFO] Cluster binding status: {binding_status}")
             if binding_status == "ready":

@@ -224,18 +224,31 @@ async def test_submit_duplicate_work_item_via_api_returns_409() -> None:
     app = create_app()
     app.state.ep_engine = engine
     app.dependency_overrides[get_service_identity] = lambda: ServiceIdentity(
-        client_id="test-duplicate-api", scopes=frozenset({"work-items:submit"})
+        client_id="test-duplicate-api", scopes=frozenset({"work.execute"})
     )
 
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            body = {"id": str(item_id), "workload_type": "script", "payload": _VALID_INVOCATION_PAYLOAD}
-            first = await client.post("/v1/work-items", json=body)
+            body = {
+                "message_id": str(uuid.uuid4()),
+                "command_id": str(item_id),
+                "source_id": "test-duplicate-api",
+                "destination_id": "execution-plane",
+                "scope": {"client_id": "test-duplicate-api"},
+                "command": {
+                    "command_id": str(item_id),
+                    "command_type": "work.execute",
+                    "command_revision": 1,
+                    "occurred_at": datetime.now(UTC).isoformat(),
+                    "payload": _VALID_INVOCATION_PAYLOAD,
+                },
+            }
+            first = await client.post("/v1/commands", json=body)
             assert first.status_code == 202
 
-            second = await client.post("/v1/work-items", json=body)
+            second = await client.post("/v1/commands", json=body)
             assert second.status_code == 409
-            assert second.json()["detail"] == f"Work item {item_id} already exists"
+            assert second.json()["detail"] == "Resource state conflicts with the request"
     finally:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         async with session_factory() as session:

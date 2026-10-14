@@ -138,3 +138,17 @@ The management image runs as UID 1001. Its default command starts the controller
 ## Ownership
 
 Use this repository for EP worker, registry, migration, and placement changes. Make coordinated API, authorization, integration, and workflow changes in [Syntara](https://github.com/syntara-orchestration/syntara), and link the changes across pull requests.
+
+## Command API and shared contracts
+
+All mutations use `POST /v1/commands`. Work, cluster-binding and execution-target
+state is available through the resource query endpoints. Commands are not
+persisted, and no command-status or child-history endpoint is provided. Work
+completion is delivered as a `work.execute.completed` command.
+
+The separately installable `src/execution_plane_client` package contains only
+command contracts, validation, the handler registry and handler protocol. EP
+owns the routes, handlers and existing domain persistence. See
+[the integration contract](docs/integration.md) for payloads, permissions,
+resource identities and callback configuration. The former REST mutation API
+and completion-event wire format are replaced.

@@ -12,9 +12,9 @@ import structlog
 
 from execution_plane.cluster.binding_reconciler import run_cluster_binding_reconciler
 from execution_plane.cluster.cluster_store import ClusterStore
+from execution_plane.completion_notifier.notifier import CompletionNotifier
 from execution_plane.config import get_ep_settings, to_asyncpg_url
 from execution_plane.drain_monitor import DrainMonitor
-from execution_plane.event_delivery import CompletionEventDelivery
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.execution_target_reconciler.adapters import build_placement_resolver
 from execution_plane.execution_target_reconciler.exceptions import UnknownBackendTypeError
@@ -224,7 +224,7 @@ async def run_worker(database_url: str) -> None:
         ClusterStore.from_database_url(database_url) as cluster_store,
         ExecutionTargetStore.from_database_url(database_url) as target_store,
     ):
-        event_delivery = CompletionEventDelivery(settings)
+        event_delivery = CompletionNotifier(settings)
         workload_manager = VanillaK8sWorkerManager(target_store, cluster_store, work_store, settings)
         worker_managers = WorkerManagerRegistry()
         worker_managers.register(BackendType.VANILLA_K8S, workload_manager)

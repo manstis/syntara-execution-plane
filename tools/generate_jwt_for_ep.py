@@ -9,7 +9,7 @@ Usage:
     TOKEN=$(uv run python tools/generate_jwt_for_ep.py)
     curl -k -H "Authorization: Bearer $TOKEN" https://127.0.0.1:8001/v1/work-items
 
-    # Submit requires a project UUID, not only all_projects:
+    # Optionally include a project UUID as caller metadata:
     uv run python tools/generate_jwt_for_ep.py --project-id 00000000-0000-0000-0000-000000000001
 """
 
@@ -56,7 +56,7 @@ def main() -> int:
         dest="scopes",
         help="Repeatable scope. Default: all local-dev EP scopes",
     )
-    parser.add_argument("--project-id", type=UUID, help="Project UUID required to submit work")
+    parser.add_argument("--project-id", type=UUID, help="Optional caller metadata; EP authorizes work by client_id")
     parser.add_argument(
         "--all-projects",
         action=argparse.BooleanOptionalAction,

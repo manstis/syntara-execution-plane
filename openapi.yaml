@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Execution Plane API
-  description: Accept, track, and retrieve execution work independently of Syntara
-    workflows.
+  description: Command submission and client-scoped execution resources. No command
+    history is retained.
   version: 1.0.0
 paths:
   /v1/capabilities:
@@ -15,11 +15,20 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CapabilitiesResponse'
-  /v1/work-items:
+                $ref: '#/components/schemas/CapabilitiesRead'
+      security:
+      - HTTPBearer: []
+  /v1/commands:
     post:
-      summary: Submit Work Item
-      operationId: submit_work_item_v1_work_items_post
+      summary: Receive Command
+      operationId: receive_command_v1_commands_post
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransportReceipt'
       security:
       - HTTPBearer: []
       requestBody:
@@ -27,23 +36,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/WorkItemSubmit'
-      responses:
-        '202':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WorkItemRead'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+              $ref: '#/components/schemas/MessageEnvelope'
+  /v1/work-items:
     get:
-      summary: List Work Items
-      operationId: list_work_items_v1_work_items_get
+      summary: Work Items
+      operationId: work_items_v1_work_items_get
       security:
       - HTTPBearer: []
       parameters:
@@ -65,7 +62,93 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/WorkItemRead'
-                title: Response List Work Items V1 Work Items Get
+                title: Response Work Items V1 Work Items Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/work-items/{resource_id}:
+    get:
+      summary: Work Item
+      operationId: work_item_v1_work_items__resource_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: resource_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Resource Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkItemRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/clusters:
+    get:
+      summary: Clusters
+      operationId: clusters_v1_clusters_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ClusterRead'
+                title: Response Clusters V1 Clusters Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/clusters/{resource_id}:
+    get:
+      summary: Cluster
+      operationId: cluster_v1_clusters__resource_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: resource_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Resource Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterRead'
         '422':
           description: Validation Error
           content:
@@ -74,8 +157,8 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1/execution-targets:
     get:
-      summary: List Execution Targets
-      operationId: list_execution_targets_v1_execution_targets_get
+      summary: Targets
+      operationId: targets_v1_execution_targets_get
       security:
       - HTTPBearer: []
       parameters:
@@ -97,123 +180,34 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ExecutionTargetRead'
-                title: Response List Execution Targets V1 Execution Targets Get
+                title: Response Targets V1 Execution Targets Get
         '422':
           description: Validation Error
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /v1/cluster-bindings/{source_integration_id}:
-    put:
-      summary: Upsert Cluster Binding
-      description: Persist a versioned desired state for the independently managed
-        cluster.
-      operationId: upsert_cluster_binding_v1_cluster_bindings__source_integration_id__put
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: source_integration_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Source Integration Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ClusterBindingUpsert'
-      responses:
-        '202':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ClusterBindingRead'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/execution-targets/{resource_id}:
     get:
-      summary: Get Cluster Binding
-      description: Return safe desired and observed state for a source integration.
-      operationId: get_cluster_binding_v1_cluster_bindings__source_integration_id__get
+      summary: Target
+      operationId: target_v1_execution_targets__resource_id__get
       security:
       - HTTPBearer: []
       parameters:
-      - name: source_integration_id
+      - name: resource_id
         in: path
         required: true
         schema:
           type: string
           format: uuid
-          title: Source Integration Id
+          title: Resource Id
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ClusterBindingRead'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /v1/work-items/{work_id}:
-    get:
-      summary: Get Work Item
-      operationId: get_work_item_v1_work_items__work_id__get
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: work_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Work Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WorkItemRead'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /v1/work-items/{work_id}/cancel:
-    post:
-      summary: Cancel Work Item
-      operationId: cancel_work_item_v1_work_items__work_id__cancel_post
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: work_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Work Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WorkItemRead'
+                $ref: '#/components/schemas/ExecutionTargetRead'
         '422':
           description: Validation Error
           content:
@@ -229,33 +223,41 @@ components:
       - openshell
       title: BackendType
       description: Supported execution target backends.
-    CapabilitiesResponse:
+    CapabilitiesRead:
       properties:
-        api_version:
-          type: string
-          title: Api Version
-          default: v1
-        workloads:
-          items:
-            type: string
-          type: array
-          title: Workloads
-        result_events:
-          type: boolean
-          title: Result Events
-          default: true
+        protocol_revision:
+          type: integer
+          const: 1
+          title: Protocol Revision
+          default: 1
+        commands:
+          additionalProperties:
+            items:
+              type: integer
+            type: array
+          type: object
+          title: Commands
+      additionalProperties: false
       type: object
-      title: CapabilitiesResponse
-      description: Contract and workload features implemented by this service release.
-    ClusterBindingRead:
+      required:
+      - commands
+      title: CapabilitiesRead
+      description: Command revisions installed by this participant.
+    ClusterRead:
       properties:
-        client_id:
-          type: string
-          title: Client Id
-        source_integration_id:
+        id:
           type: string
           format: uuid
-          title: Source Integration Id
+          title: Id
+        name:
+          type: string
+          title: Name
+        endpoint:
+          type: string
+          title: Endpoint
+        namespace:
+          type: string
+          title: Namespace
         desired_revision:
           type: integer
           title: Desired Revision
@@ -279,59 +281,11 @@ components:
         enabled:
           type: boolean
           title: Enabled
-        updated_at:
-          type: string
-          format: date-time
-          title: Updated At
-      type: object
-      required:
-      - client_id
-      - source_integration_id
-      - desired_revision
-      - observed_revision
-      - cluster_id
-      - status
-      - status_message
-      - enabled
-      - updated_at
-      title: ClusterBindingRead
-      description: Safe observed state for an AO-owned source integration.
-    ClusterBindingUpsert:
-      properties:
-        revision:
-          type: integer
-          minimum: 1.0
-          title: Revision
-        name:
-          type: string
-          maxLength: 255
-          minLength: 1
-          title: Name
-        endpoint:
-          type: string
-          maxLength: 2048
-          minLength: 1
-          title: Endpoint
-        namespace:
-          type: string
-          maxLength: 63
-          minLength: 1
-          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-          title: Namespace
-        credential:
-          type: string
-          title: Credential
-          default: ''
-        ca_certificate:
-          anyOf:
-          - type: string
-            maxLength: 65536
-          - type: 'null'
-          title: Ca Certificate
-        insecure_skip_tls_verify:
-          type: boolean
-          title: Insecure Skip Tls Verify
-          default: false
+        labels:
+          additionalProperties:
+            type: string
+          type: object
+          title: Labels
         project_ids:
           anyOf:
           - items:
@@ -340,24 +294,28 @@ components:
             type: array
           - type: 'null'
           title: Project Ids
-        labels:
-          additionalProperties:
-            type: string
-          type: object
-          title: Labels
-        enabled:
-          type: boolean
-          title: Enabled
-          default: true
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
       type: object
       required:
-      - revision
+      - id
       - name
       - endpoint
       - namespace
-      title: ClusterBindingUpsert
-      description: Versioned OpenShift integration desired state supplied by an authorized
-        client.
+      - desired_revision
+      - observed_revision
+      - cluster_id
+      - status
+      - status_message
+      - enabled
+      - labels
+      - project_ids
+      - updated_at
+      title: ClusterRead
+      description: Desired and observed cluster binding state, keyed by integration
+        UUID.
     ExecutionTargetRead:
       properties:
         id:
@@ -479,6 +437,37 @@ components:
       type: object
       title: RHELPlacement
       description: Placeholder for RHEL-specific execution-target metadata.
+    ResourceReference:
+      properties:
+        kind:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Kind
+        resource_id:
+          type: string
+          format: uuid
+          title: Resource Id
+        resource_key:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Resource Key
+        revision:
+          anyOf:
+          - type: integer
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Revision
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - resource_id
+      title: ResourceReference
+      description: Safe reference from a command to a participant-owned resource.
     TargetStatus:
       type: string
       enum:
@@ -491,6 +480,27 @@ components:
       - failed
       title: TargetStatus
       description: Lifecycle states of an execution target.
+    TransportReceipt:
+      properties:
+        received:
+          type: boolean
+          const: true
+          title: Received
+          default: true
+        message_id:
+          type: string
+          format: uuid
+          title: Message Id
+        resource:
+          anyOf:
+          - $ref: '#/components/schemas/ResourceReference'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - message_id
+      title: TransportReceipt
+      description: Receipt of a handled request, without a persisted command record.
     ValidationError:
       properties:
         loc:
@@ -531,6 +541,15 @@ components:
             type: object
           - type: 'null'
           title: Result
+        result_omitted:
+          type: boolean
+          title: Result Omitted
+          default: false
+        result_size_bytes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Result Size Bytes
         created_at:
           type: string
           format: date-time
@@ -592,28 +611,982 @@ components:
       - cancelled
       title: WorkItemStatus
       description: Lifecycle states of a dispatched work item.
-    WorkItemSubmit:
+    CancelCommand:
       properties:
-        id:
+        target_command_id:
           type: string
           format: uuid
-          title: Id
+          title: Target Command Id
+      additionalProperties: false
+      type: object
+      required:
+      - target_command_id
+      title: CancelCommand
+      description: Cancel an existing work command, whose UUID is its work-item UUID.
+    ClusterDelete:
+      properties:
+        resource_key:
+          type: string
+          format: uuid
+          title: Resource Key
+        desired_revision:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Desired Revision
+      additionalProperties: false
+      type: object
+      required:
+      - resource_key
+      - desired_revision
+      title: ClusterDelete
+      description: Disable an existing binding at the requested desired-state revision.
+    ClusterProvision:
+      properties:
+        resource_key:
+          type: string
+          format: uuid
+          title: Resource Key
+        desired_revision:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Desired Revision
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        endpoint:
+          type: string
+          maxLength: 2048
+          title: Endpoint
+        namespace:
+          type: string
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+          title: Namespace
+        credential:
+          type: string
+          title: Credential
+          default: ''
+        ca_certificate:
+          anyOf:
+          - type: string
+            maxLength: 65536
+          - type: 'null'
+          title: Ca Certificate
+        project_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+          - type: 'null'
+          title: Project Ids
+        labels:
+          additionalProperties:
+            type: string
+          type: object
+          title: Labels
+        enabled:
+          type: boolean
+          title: Enabled
+          default: true
+      additionalProperties: false
+      type: object
+      required:
+      - resource_key
+      - desired_revision
+      - name
+      - endpoint
+      - namespace
+      title: ClusterProvision
+      description: Provision through the same binding and default-target reconciler.
+    ClusterRegister:
+      properties:
+        resource_key:
+          type: string
+          format: uuid
+          title: Resource Key
+        desired_revision:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Desired Revision
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        endpoint:
+          type: string
+          maxLength: 2048
+          title: Endpoint
+        namespace:
+          type: string
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+          title: Namespace
+        credential:
+          type: string
+          title: Credential
+          default: ''
+        ca_certificate:
+          anyOf:
+          - type: string
+            maxLength: 65536
+          - type: 'null'
+          title: Ca Certificate
+        project_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+          - type: 'null'
+          title: Project Ids
+        labels:
+          additionalProperties:
+            type: string
+          type: object
+          title: Labels
+        enabled:
+          type: boolean
+          title: Enabled
+          default: true
+      additionalProperties: false
+      type: object
+      required:
+      - resource_key
+      - desired_revision
+      - name
+      - endpoint
+      - namespace
+      title: ClusterRegister
+      description: Create or replace the complete desired configuration of a binding.
+    ClusterUpdate:
+      properties:
+        resource_key:
+          type: string
+          format: uuid
+          title: Resource Key
+        desired_revision:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Desired Revision
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        endpoint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Endpoint
+        namespace:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Namespace
+        credential:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Credential
+        ca_certificate:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ca Certificate
+        project_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+          - type: 'null'
+          title: Project Ids
+        labels:
+          anyOf:
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          title: Labels
+        enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enabled
+      additionalProperties: false
+      type: object
+      required:
+      - resource_key
+      - desired_revision
+      title: ClusterUpdate
+      description: Patch a binding; only CA and project grants support explicit null.
+    Command:
+      oneOf:
+      - $ref: '#/components/schemas/ClusterDeleteCommandV1'
+      - $ref: '#/components/schemas/ClusterProvisionCommandV1'
+      - $ref: '#/components/schemas/ClusterRegisterCommandV1'
+      - $ref: '#/components/schemas/ClusterUpdateCommandV1'
+      - $ref: '#/components/schemas/CancelCommandV1'
+      - $ref: '#/components/schemas/TargetDeleteCommandV1'
+      - $ref: '#/components/schemas/TargetRegisterCommandV1'
+      - $ref: '#/components/schemas/TargetUpdateCommandV1'
+      - $ref: '#/components/schemas/WorkExecuteCommandV1'
+      title: Command
+      description: A command type and revision paired with its corresponding payload.
+      discriminator:
+        propertyName: command_type
+        mapping:
+          cluster.delete: '#/components/schemas/ClusterDeleteCommandV1'
+          cluster.provision: '#/components/schemas/ClusterProvisionCommandV1'
+          cluster.register: '#/components/schemas/ClusterRegisterCommandV1'
+          cluster.update: '#/components/schemas/ClusterUpdateCommandV1'
+          command.cancel: '#/components/schemas/CancelCommandV1'
+          execution_target.delete: '#/components/schemas/TargetDeleteCommandV1'
+          execution_target.register: '#/components/schemas/TargetRegisterCommandV1'
+          execution_target.update: '#/components/schemas/TargetUpdateCommandV1'
+          work.execute: '#/components/schemas/WorkExecuteCommandV1'
+    CommandScope:
+      properties:
+        client_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Client Id
+      additionalProperties: false
+      type: object
+      required:
+      - client_id
+      title: CommandScope
+      description: Initiating service client; project authorization belongs to the
+        caller.
+    Completion:
+      properties:
+        status:
+          type: string
+          enum:
+          - succeeded
+          - failed
+          - cancelled
+          - outcome_unknown
+          title: Status
+        result:
+          additionalProperties: true
+          type: object
+          title: Result
+        resource:
+          anyOf:
+          - $ref: '#/components/schemas/ResourceReference'
+          - type: 'null'
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      title: Completion
+      description: Terminal or uncertain work outcome delivered to the initiating
+        client.
+    ClientKubernetesPlacement:
+      properties:
+        type:
+          type: string
+          const: kubernetes
+          title: Type
+          default: kubernetes
+        namespace:
+          type: string
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+          title: Namespace
+        node_selectors:
+          items:
+            type: string
+          type: array
+          title: Node Selectors
+        tolerations:
+          items:
+            type: string
+          type: array
+          title: Tolerations
+      additionalProperties: false
+      type: object
+      required:
+      - namespace
+      title: KubernetesPlacement
+      description: Kubernetes placement contract, independent of Kubernetes libraries.
+    MessageEnvelope:
+      properties:
+        message_id:
+          type: string
+          format: uuid
+          title: Message Id
+        message_type:
+          type: string
+          const: command.submit
+          title: Message Type
+          default: command.submit
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        sequence:
+          type: integer
+          minimum: 0.0
+          title: Sequence
+          default: 0
+        source_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Source Id
+        destination_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Destination Id
+        scope:
+          $ref: '#/components/schemas/CommandScope'
+        command:
+          $ref: '#/components/schemas/Command'
+      additionalProperties: false
+      type: object
+      required:
+      - message_id
+      - command_id
+      - source_id
+      - destination_id
+      - scope
+      - command
+      title: MessageEnvelope
+      description: Participant identity around one logical command.
+    NodeInvocation:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        operation:
+          type: string
+          const: execute
+          title: Operation
+          default: execute
+        inputs:
+          additionalProperties: true
+          type: object
+          title: Inputs
+        credentials:
+          additionalProperties: true
+          type: object
+          title: Credentials
+        workflow_context:
+          additionalProperties: true
+          type: object
+          title: Workflow Context
+        settings:
+          additionalProperties: true
+          type: object
+          title: Settings
+        timeout_seconds:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Timeout Seconds
+        max_output_bytes:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Max Output Bytes
+      additionalProperties: false
+      type: object
+      required:
+      - inputs
+      - credentials
+      - workflow_context
+      - settings
+      - timeout_seconds
+      - max_output_bytes
+      title: NodeInvocation
+      description: Version-one invocation consumed by the existing node protocol.
+    ClientRHELPlacement:
+      properties:
+        type:
+          type: string
+          const: rhel
+          title: Type
+          default: rhel
+      additionalProperties: false
+      type: object
+      title: RHELPlacement
+      description: Placement for a supported RHEL backend.
+    TargetDelete:
+      properties:
+        resource_id:
+          type: string
+          format: uuid
+          title: Resource Id
+      additionalProperties: false
+      type: object
+      required:
+      - resource_id
+      title: TargetDelete
+      description: Request draining of an independently managed execution target.
+    TargetRegister:
+      properties:
+        resource_id:
+          type: string
+          format: uuid
+          title: Resource Id
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        backend_type:
+          type: string
+          enum:
+          - vanilla_k8s
+          - openshell
+          title: Backend Type
+        placement:
+          oneOf:
+          - $ref: '#/components/schemas/ClientKubernetesPlacement'
+          - $ref: '#/components/schemas/ClientRHELPlacement'
+          title: Placement
+          discriminator:
+            propertyName: type
+            mapping:
+              kubernetes: '#/components/schemas/ClientKubernetesPlacement'
+              rhel: '#/components/schemas/ClientRHELPlacement'
+        endpoint:
+          type: string
+          maxLength: 2048
+          minLength: 1
+          title: Endpoint
+        credential:
+          type: string
+          title: Credential
+          default: ''
+        labels:
+          additionalProperties:
+            type: string
+          type: object
+          title: Labels
+        cluster_id:
+          type: string
+          format: uuid
+          title: Cluster Id
+        is_default:
+          type: boolean
+          title: Is Default
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - resource_id
+      - name
+      - backend_type
+      - placement
+      - endpoint
+      - cluster_id
+      title: TargetRegister
+      description: Register an independently identified target on an existing cluster.
+    TargetUpdate:
+      properties:
+        resource_id:
+          type: string
+          format: uuid
+          title: Resource Id
+        name:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Name
+        endpoint:
+          anyOf:
+          - type: string
+            maxLength: 2048
+            minLength: 1
+          - type: 'null'
+          title: Endpoint
+        placement:
+          anyOf:
+          - oneOf:
+            - $ref: '#/components/schemas/ClientKubernetesPlacement'
+            - $ref: '#/components/schemas/ClientRHELPlacement'
+            discriminator:
+              propertyName: type
+              mapping:
+                kubernetes: '#/components/schemas/ClientKubernetesPlacement'
+                rhel: '#/components/schemas/ClientRHELPlacement'
+          - type: 'null'
+          title: Placement
+        credential:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Credential
+        labels:
+          anyOf:
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          title: Labels
+      additionalProperties: false
+      type: object
+      required:
+      - resource_id
+      title: TargetUpdate
+      description: Mutable target fields; cluster and default identity cannot be reassigned.
+    WorkExecute:
+      properties:
+        image:
+          type: string
+          maxLength: 2048
+          minLength: 1
+          title: Image
+        invocation:
+          $ref: '#/components/schemas/NodeInvocation'
+        output_config:
+          anyOf:
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          title: Output Config
         workload_type:
           type: string
           const: script
           title: Workload Type
           default: script
-        payload:
-          additionalProperties: true
-          type: object
-          title: Payload
+      additionalProperties: false
       type: object
       required:
-      - id
+      - image
+      - invocation
+      title: WorkExecute
+      description: Script command with stable caller correlation and provider-neutral
+        input.
+    ClusterDeleteCommandV1:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        parent_command_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Parent Command Id
+        command_type:
+          type: string
+          const: cluster.delete
+        command_revision:
+          type: integer
+          const: 1
+        payload:
+          $ref: '#/components/schemas/ClusterDelete'
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+      additionalProperties: false
+      type: object
+      required:
+      - command_id
+      - command_type
+      - command_revision
       - payload
-      title: WorkItemSubmit
-      description: Script work accepted from a trusted client.
+      - occurred_at
+      title: ClusterDeleteCommandV1
+      description: One versioned operation; participants persist only its domain effects.
+    ClusterProvisionCommandV1:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        parent_command_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Parent Command Id
+        command_type:
+          type: string
+          const: cluster.provision
+        command_revision:
+          type: integer
+          const: 1
+        payload:
+          $ref: '#/components/schemas/ClusterProvision'
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+      additionalProperties: false
+      type: object
+      required:
+      - command_id
+      - command_type
+      - command_revision
+      - payload
+      - occurred_at
+      title: ClusterProvisionCommandV1
+      description: One versioned operation; participants persist only its domain effects.
+    ClusterRegisterCommandV1:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        parent_command_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Parent Command Id
+        command_type:
+          type: string
+          const: cluster.register
+        command_revision:
+          type: integer
+          const: 1
+        payload:
+          $ref: '#/components/schemas/ClusterRegister'
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+      additionalProperties: false
+      type: object
+      required:
+      - command_id
+      - command_type
+      - command_revision
+      - payload
+      - occurred_at
+      title: ClusterRegisterCommandV1
+      description: One versioned operation; participants persist only its domain effects.
+    ClusterUpdateCommandV1:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        parent_command_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Parent Command Id
+        command_type:
+          type: string
+          const: cluster.update
+        command_revision:
+          type: integer
+          const: 1
+        payload:
+          $ref: '#/components/schemas/ClusterUpdate'
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+      additionalProperties: false
+      type: object
+      required:
+      - command_id
+      - command_type
+      - command_revision
+      - payload
+      - occurred_at
+      title: ClusterUpdateCommandV1
+      description: One versioned operation; participants persist only its domain effects.
+    CancelCommandV1:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        parent_command_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Parent Command Id
+        command_type:
+          type: string
+          const: command.cancel
+        command_revision:
+          type: integer
+          const: 1
+        payload:
+          $ref: '#/components/schemas/CancelCommand'
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+      additionalProperties: false
+      type: object
+      required:
+      - command_id
+      - command_type
+      - command_revision
+      - payload
+      - occurred_at
+      title: CancelCommandV1
+      description: One versioned operation; participants persist only its domain effects.
+    TargetDeleteCommandV1:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        parent_command_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Parent Command Id
+        command_type:
+          type: string
+          const: execution_target.delete
+        command_revision:
+          type: integer
+          const: 1
+        payload:
+          $ref: '#/components/schemas/TargetDelete'
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+      additionalProperties: false
+      type: object
+      required:
+      - command_id
+      - command_type
+      - command_revision
+      - payload
+      - occurred_at
+      title: TargetDeleteCommandV1
+      description: One versioned operation; participants persist only its domain effects.
+    TargetRegisterCommandV1:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        parent_command_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Parent Command Id
+        command_type:
+          type: string
+          const: execution_target.register
+        command_revision:
+          type: integer
+          const: 1
+        payload:
+          $ref: '#/components/schemas/TargetRegister'
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+      additionalProperties: false
+      type: object
+      required:
+      - command_id
+      - command_type
+      - command_revision
+      - payload
+      - occurred_at
+      title: TargetRegisterCommandV1
+      description: One versioned operation; participants persist only its domain effects.
+    TargetUpdateCommandV1:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        parent_command_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Parent Command Id
+        command_type:
+          type: string
+          const: execution_target.update
+        command_revision:
+          type: integer
+          const: 1
+        payload:
+          $ref: '#/components/schemas/TargetUpdate'
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+      additionalProperties: false
+      type: object
+      required:
+      - command_id
+      - command_type
+      - command_revision
+      - payload
+      - occurred_at
+      title: TargetUpdateCommandV1
+      description: One versioned operation; participants persist only its domain effects.
+    WorkExecuteCommandV1:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        parent_command_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Parent Command Id
+        command_type:
+          type: string
+          const: work.execute
+        command_revision:
+          type: integer
+          const: 1
+        payload:
+          $ref: '#/components/schemas/WorkExecute'
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+      additionalProperties: false
+      type: object
+      required:
+      - command_id
+      - command_type
+      - command_revision
+      - payload
+      - occurred_at
+      title: WorkExecuteCommandV1
+      description: One versioned operation; participants persist only its domain effects.
+    CompletionCommandV1:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        parent_command_id:
+          type: string
+          format: uuid
+        command_type:
+          type: string
+          const: work.execute.completed
+        command_revision:
+          type: integer
+          const: 1
+        payload:
+          $ref: '#/components/schemas/Completion'
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+      additionalProperties: false
+      type: object
+      required:
+      - command_id
+      - command_type
+      - command_revision
+      - payload
+      - occurred_at
+      - parent_command_id
+      title: CompletionCommandV1
+      description: One versioned operation; participants persist only its domain effects.
+    CompletionMessageEnvelope:
+      properties:
+        message_id:
+          type: string
+          format: uuid
+          title: Message Id
+        message_type:
+          type: string
+          const: command.submit
+          title: Message Type
+          default: command.submit
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        sequence:
+          type: integer
+          minimum: 0.0
+          title: Sequence
+          default: 0
+        source_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Source Id
+        destination_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Destination Id
+        scope:
+          $ref: '#/components/schemas/CommandScope'
+        command:
+          $ref: '#/components/schemas/CompletionCommandV1'
+      additionalProperties: false
+      type: object
+      required:
+      - message_id
+      - command_id
+      - source_id
+      - destination_id
+      - scope
+      - command
+      title: CompletionMessageEnvelope
+      description: Work completion sent to the configured caller's command ingress.
   securitySchemes:
     HTTPBearer:
       type: http
       scheme: bearer
+webhooks:
+  work.execute.completed:
+    post:
+      summary: Notify the caller of a work outcome
+      description: EP sends this command to EP_COMPLETION_CALLBACK_URL. The caller
+        acknowledges it with a receipt containing the same message_id.
+      operationId: notify_work_completion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompletionMessageEnvelope'
+      responses:
+        2XX:
+          description: The completion command was handled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransportReceipt'

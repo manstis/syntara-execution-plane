@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import jwt
 
+from execution_plane_client.commands.work import WorkExecute
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -36,17 +38,24 @@ DEFAULT_JWT_CLIENT_ID = "syntara-orchestration"
 DEFAULT_TOKEN_TTL = timedelta(hours=8)
 DEFAULT_TOKEN_SCOPES = (
     "work-items:read",
-    "work-items:submit",
-    "work-items:cancel",
+    "work.execute",
+    "command.cancel",
     "execution-targets:read",
-    "cluster-bindings:read",
-    "cluster-bindings:write",
+    "clusters:read",
+    "cluster.register",
+    "cluster.provision",
+    "cluster.update",
+    "cluster.delete",
+    "execution_target.register",
+    "execution_target.update",
+    "execution_target.delete",
+    "capabilities:read",
 )
 
 DEFAULT_API_URL = "https://127.0.0.1:8001"
 DEFAULT_PROJECT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 DEFAULT_NODE_IMAGE = _DEFAULT_NODE_IMAGE
-TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "reconciliation_required"})
 
 
 def default_node_image() -> str:
@@ -130,8 +139,8 @@ def ep_service_token(
 ) -> str:
     """Mint an AO service JWT for local Execution Plane API calls.
 
-    Omit ``project_id`` to issue an ``all_projects`` token (cluster-binding
-    writes). Pass a project UUID for work-item submit and scoped reads.
+    Omit ``project_id`` to issue an ``all_projects`` token. A project UUID is
+    optional caller metadata; EP authorizes commands and reads by client ID.
     """
     key_path = resolve_private_key_path(private_key)
     claims = service_token_claims(
@@ -205,16 +214,22 @@ def submit_work_item(
     api_url: str,
     token: str,
     *,
-    item_id: uuid.UUID,
+    work_id: uuid.UUID,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """POST one script work item and return the accepted record."""
-    body = {
-        "id": str(item_id),
-        "workload_type": "script",
-        "payload": payload,
-    }
-    status, response = ep_request("POST", f"{api_url.rstrip('/')}/v1/work-items", token, body)
+    """POST a work.execute command and return its acknowledgement."""
+    client_id = os.environ.get("EP_AO_CLIENT_ID", DEFAULT_JWT_CLIENT_ID)
+    body = (
+        WorkExecute.model_validate(payload)
+        .to_message(
+            source_id=client_id,
+            destination_id=os.environ.get("EP_SERVICE_JWT_AUDIENCE", DEFAULT_JWT_AUDIENCE),
+            client_id=client_id,
+            command_id=work_id,
+        )
+        .model_dump(mode="json")
+    )
+    status, response = ep_request("POST", f"{api_url.rstrip('/')}/v1/commands", token, body)
     if status not in {HTTPStatus.ACCEPTED, HTTPStatus.OK}:
         msg = f"Work-item submit failed ({status}): {response}"
         raise RuntimeError(msg)

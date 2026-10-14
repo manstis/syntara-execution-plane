@@ -2,12 +2,11 @@
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
 
-from execution_plane.api.schemas import WorkItemSubmit
 from execution_plane.work_item_client import (
     DEFAULT_JWT_AUDIENCE,
     DEFAULT_JWT_CLIENT_ID,
@@ -19,18 +18,19 @@ from execution_plane.work_item_client import (
     resolve_private_key_path,
     service_token_claims,
 )
+from execution_plane_client.commands.work import WorkExecute
 
 _PROJECT_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
-def test_build_payload_is_accepted_by_work_item_submit_schema() -> None:
+def test_build_payload_is_accepted_by_work_execute_schema() -> None:
     payload = build_payload(
         language="python",
         code="print('hello')",
         timeout_seconds=60,
         environment={},
     )
-    WorkItemSubmit(id=uuid4(), payload=payload)
+    WorkExecute.model_validate(payload)
     assert payload["image"] == DEFAULT_NODE_IMAGE
     assert payload["invocation"]["version"] == 1
     assert payload["invocation"]["operation"] == "execute"
@@ -47,7 +47,7 @@ def test_build_payload_includes_environment_and_image_override() -> None:
     )
     assert payload["image"] == "quay.io/example/node:dev"
     assert payload["invocation"]["inputs"]["environment"] == {"FOO": "bar"}
-    WorkItemSubmit(id=uuid4(), payload=payload)
+    WorkExecute.model_validate(payload)
 
 
 def test_build_payload_rejects_invalid_timeout_through_schema() -> None:
@@ -58,7 +58,7 @@ def test_build_payload_rejects_invalid_timeout_through_schema() -> None:
         environment={},
     )
     with pytest.raises(ValidationError, match="timeout_seconds"):
-        WorkItemSubmit(id=uuid4(), payload=payload)
+        WorkExecute.model_validate(payload)
 
 
 def test_service_token_claims_include_project_id() -> None:
@@ -69,7 +69,7 @@ def test_service_token_claims_include_project_id() -> None:
     assert claims["client_id"] == DEFAULT_JWT_CLIENT_ID
     assert claims["project_id"] == str(_PROJECT_ID)
     assert "all_projects" not in claims
-    assert "work-items:submit" in str(claims["scope"])
+    assert "work.execute" in str(claims["scope"])
     assert claims["exp"] == now + timedelta(hours=1)
 
 

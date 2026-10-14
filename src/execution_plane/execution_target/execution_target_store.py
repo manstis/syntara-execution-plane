@@ -77,6 +77,8 @@ class ExecutionTargetStore(StoreBase):
         created_by: uuid.UUID,
         placement: ExecutionTargetPlacement,
         labels: dict[str, str] | None = None,
+        *,
+        target_id: uuid.UUID | None = None,
     ) -> ExecutionTarget:
         """Create a target, rejecting a second default in the same cluster."""
         now = datetime.now(UTC)
@@ -94,6 +96,8 @@ class ExecutionTargetStore(StoreBase):
             updated_by=created_by,
             updated_at=now,
         )
+        if target_id is not None:
+            target.id = target_id
 
         async with self._session_context() as session:
             try:
@@ -109,15 +113,15 @@ class ExecutionTargetStore(StoreBase):
                     if result.scalar_one_or_none() is not None:
                         raise DefaultExecutionTargetError  # noqa: TRY301
                 session.add(target)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(target)
             except IntegrityError as exc:
-                await session.rollback()
+                await self._rollback(session)
                 if is_default:
                     raise DefaultExecutionTargetError from exc
                 raise
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def get(self, target_id: uuid.UUID, *, include_secret: bool = False) -> ExecutionTarget | None:
@@ -167,10 +171,10 @@ class ExecutionTargetStore(StoreBase):
                 target.status = TargetStatus.DRAINING
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(target)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def activate(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> ExecutionTarget:
@@ -186,10 +190,10 @@ class ExecutionTargetStore(StoreBase):
                 target.status = TargetStatus.ACTIVE
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(target)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def update(
@@ -224,10 +228,10 @@ class ExecutionTargetStore(StoreBase):
                     target.api_key = api_key
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(target)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def reactivate(
@@ -255,10 +259,10 @@ class ExecutionTargetStore(StoreBase):
                 target.placement = placement
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(target)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def mark_failed(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> ExecutionTarget:
@@ -273,10 +277,10 @@ class ExecutionTargetStore(StoreBase):
                 target.status_message = "target drain failed"
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
-                await session.commit()
+                await self._commit(session)
                 return self._without_secret(target)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     async def finalize_delete(self, target_id: uuid.UUID) -> None:
@@ -311,9 +315,9 @@ class ExecutionTargetStore(StoreBase):
                     .values(execution_target_id=None)
                 )
                 await session.delete(target)
-                await session.commit()
+                await self._commit(session)
             except Exception:
-                await session.rollback()
+                await self._rollback(session)
                 raise
 
     @staticmethod
