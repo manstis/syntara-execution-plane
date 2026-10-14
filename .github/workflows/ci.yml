@@ -216,7 +216,8 @@ jobs:
       - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
         with:
           enable-cache: true
-      - run: uv sync --locked --all-groups
+      # Reporting needs development tools, not the editable EP packages.
+      - run: uv sync --locked --only-group dev --no-build
       - name: Download coverage from each test job
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -230,6 +231,9 @@ jobs:
             test -s "coverage-artifacts/ep-coverage-${suite}/pytest-results.xml"
           done
       - run: make coverage-combine
+        env:
+          # Keep uv run from syncing (and building) the omitted EP packages.
+          UV_NO_SYNC: "true"
       - name: Save PR number for the SonarCloud workflow
         if: github.event_name == 'pull_request'
         env:
