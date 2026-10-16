@@ -278,3 +278,44 @@ jobs:
             htmlcov/
           if-no-files-found: error
           retention-days: 30
+
+  sonarcloud:
+    name: SonarCloud Analysis
+    needs: combine
+    if: >-
+      success()
+      && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          show-progress: false
+
+      - name: Download combined coverage report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ep-coverage-combined
+          path: .
+          if-no-files-found: error
+
+      - name: Check coverage files
+        run: |
+          set -euo pipefail
+          test -s coverage.xml
+          test -s pytest-results.xml
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2 # v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >-
+            -Dsonar.projectKey=syntara-orchestration_syntara-execution-plane
+            -Dsonar.organization=syntara-orchestration
+            -Dsonar.scm.revision=${{ github.event.pull_request.head.sha }}
+            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
+            -Dsonar.pullrequest.branch=${{ github.event.pull_request.head.ref }}
+            -Dsonar.pullrequest.base=${{ github.event.pull_request.base.ref }}

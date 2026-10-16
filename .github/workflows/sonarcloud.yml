@@ -1,7 +1,8 @@
 ---
 name: SonarCloud Upload
 
-# This workflow is loaded from the default branch and runs after PR CI completes.
+# Fork fallback: this workflow is loaded from the default branch and runs after
+# PR CI completes. Same-repository PRs use the inline SonarCloud job in ci.yml.
 # It checks out fork-controlled source but executes only pinned actions and
 # trusted gh/git commands; it does not run repository code from the PR.
 on:
@@ -23,6 +24,7 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success'
       && github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.head_repository.full_name != github.event.workflow_run.repository.full_name
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -77,8 +79,6 @@ jobs:
           test -s pytest-results.xml
 
       - name: SonarCloud Scan
-        # SonarCloud quality gate failures are informational, not blocking.
-        continue-on-error: true
         uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2 # v7
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
