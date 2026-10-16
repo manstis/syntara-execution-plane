@@ -3,8 +3,10 @@ name: SonarCloud Upload
 
 # Fork fallback: this workflow is loaded from the default branch and runs after
 # PR CI completes. Same-repository PRs use the inline SonarCloud job in ci.yml.
-# It checks out fork-controlled source but executes only pinned actions and
-# trusted gh/git commands; it does not run repository code from the PR.
+# It checks out fork-controlled source for inspection only. The scanner
+# configuration is restored from the base repository, PR metadata is validated
+# against the triggering run, the SonarCloud host is pinned, and no repository
+# code from the PR is executed.
 on:
   workflow_run:
     workflows:
@@ -35,7 +37,7 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           if-no-files-found: error
 
-      - name: Get PR information
+      - name: Get and validate PR information
         id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -43,8 +45,24 @@ jobs:
           set -euo pipefail
 
           pr_number="$(tr -cd '0-9' < pr-number.txt)"
-          pr_base="$(gh api "repos/${{ github.repository }}/pulls/${pr_number}" --jq '.base.ref')"
-          pr_head="$(gh api "repos/${{ github.repository }}/pulls/${pr_number}" --jq '.head.ref')"
+          if [[ -z "$pr_number" ]]; then
+            echo "PR number artifact did not contain a valid number" >&2
+            exit 1
+          fi
+
+          pr_json="$(gh api "repos/${{ github.repository }}/pulls/${pr_number}")"
+          pr_head_repository="$(jq -r '.head.repo.full_name' <<< "$pr_json")"
+          pr_head_sha="$(jq -r '.head.sha' <<< "$pr_json")"
+          expected_head_repository="${{ github.event.workflow_run.head_repository.full_name }}"
+          expected_head_sha="${{ github.event.workflow_run.head_sha }}"
+
+          if [[ "$pr_head_repository" != "$expected_head_repository" || "$pr_head_sha" != "$expected_head_sha" ]]; then
+            echo "PR ${pr_number} does not match workflow run head ${expected_head_repository}@${expected_head_sha}" >&2
+            exit 1
+          fi
+
+          pr_base="$(jq -r '.base.ref' <<< "$pr_json")"
+          pr_head="$(jq -r '.head.ref' <<< "$pr_json")"
 
           {
             printf 'number=%s\n' "$pr_number"
@@ -57,15 +75,23 @@ jobs:
         with:
           repository: ${{ github.event.workflow_run.head_repository.full_name }}
           ref: ${{ github.event.workflow_run.head_sha }}
+          path: pr
           fetch-depth: 0
           show-progress: false
           persist-credentials: false
+
+      - name: Restore trusted scanner configuration
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/contents/sonar-project.properties" --jq .content | base64 -d > pr/sonar-project.properties
 
       - name: Download combined coverage
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ep-coverage-combined
-          path: .
+          path: pr
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
           if-no-files-found: error
@@ -73,15 +99,18 @@ jobs:
       - name: Check coverage files
         run: |
           set -euo pipefail
-          test -s coverage.xml
-          test -s pytest-results.xml
+          test -s pr/coverage.xml
+          test -s pr/pytest-results.xml
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2 # v7
         env:
           SONAR_TOKEN: ${{ secrets[vars.SONAR_TOKEN_SECRET_NAME] }}
+          SONARCLOUD_URL: https://sonarcloud.io
         with:
+          projectBaseDir: pr
           args: >-
+            -Dsonar.host.url=https://sonarcloud.io
             -Dsonar.projectKey=syntara-orchestration_syntara-execution-plane
             -Dsonar.organization=syntara-orchestration
             -Dsonar.scm.revision=${{ github.event.workflow_run.head_sha }}
