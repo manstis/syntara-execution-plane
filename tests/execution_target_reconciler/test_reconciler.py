@@ -278,3 +278,16 @@ async def test_no_lifecycle_eligible_target_is_no_matching_targets(
 async def test_default_filters_match_the_documented_chain() -> None:
     names = [filt.name for filt in default_filters()]
     assert names == ["lifecycle", "selector", "health", "policy"]
+
+
+@pytest.mark.asyncio
+async def test_target_revalidation_rejects_disabled_cluster(
+    make_cluster: MakeCluster,
+    make_target: MakeTarget,
+    make_reconciler: MakeReconciler,
+) -> None:
+    cluster = make_cluster(enabled=False)
+    target = make_target(cluster, name="ep-default", is_default=True)
+    resolver = make_reconciler([target])
+
+    assert await resolver.target_is_eligible(cluster, target, WorkRequirements()) is False

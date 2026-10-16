@@ -254,3 +254,49 @@ async def test_worker_releases_reservation_when_target_labels_change_during_plac
             assert persisted.result is None
     finally:
         await _cleanup_work(sessions, ids)
+
+
+async def test_worker_releases_reservation_when_cluster_is_disabled_during_placement(
+    placement_database: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
+) -> None:
+    engine, sessions = placement_database
+    ids = await _seed_work(sessions, matching=True)
+
+    try:
+        async with (
+            WorkStore.from_engine(engine) as work_store,
+            ClusterStore.from_engine(engine) as cluster_store,
+            ExecutionTargetStore.from_engine(engine) as target_store,
+        ):
+            resolver = build_placement_resolver(cluster_store, target_store)
+            reserved = await work_store.reserve_one()
+            assert reserved is not None
+            assert reserved.id == ids[2]
+            assert reserved.status is WorkItemStatus.CLAIMED
+
+            stale_result = await resolver.resolve(worker._requirements_for(reserved))
+            assert stale_result.available_targets[0].id == ids[1]
+
+            async with sessions.begin() as session:
+                cluster = await session.get(Cluster, ids[0])
+                assert cluster is not None
+                cluster.enabled = False
+
+            assigned = await worker._place_reserved_item(
+                reserved,
+                work_store,
+                cast("PlacementResolver", _StalePlacementResolver(resolver, stale_result)),
+            )
+
+            assert assigned is None
+
+        async with sessions() as session:
+            persisted = await session.get(WorkItem, ids[2])
+            assert persisted is not None
+            assert persisted.status is WorkItemStatus.PENDING
+            assert persisted.execution_target_id is None
+            assert persisted.claim_owner_id is None
+            assert persisted.claimed_at is None
+            assert persisted.result is None
+    finally:
+        await _cleanup_work(sessions, ids)

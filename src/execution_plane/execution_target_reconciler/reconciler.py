@@ -83,6 +83,8 @@ class ExecutionTargetReconciler:
         requirements: WorkRequirements,
     ) -> bool:
         """Evaluate one current target snapshot without resolving the full registry."""
+        if not cluster.enabled:
+            return False
         verdict, _ = await self._evaluate(cluster, target, requirements)
         return verdict is FilterVerdict.ELIGIBLE
 
