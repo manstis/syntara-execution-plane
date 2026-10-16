@@ -18,7 +18,7 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING
 
 import pytest
-from kubernetes.client import ApiException, BatchV1Api, CoreV1Api, V1Job, V1PodSpec
+from kubernetes.client import ApiException, BatchV1Api, CoreV1Api, V1Job, V1Pod, V1PodSpec
 
 from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.config import EPSettings, get_ep_settings
@@ -93,6 +93,29 @@ async def _wait_for_job(batch_api: BatchV1Api, job_name: str, namespace: str, ti
             return job
         if time.monotonic() >= deadline:
             pytest.fail(f"Job {job_name} was not created within {timeout_seconds}s")
+        await asyncio.sleep(0.5)
+
+
+async def _wait_for_running_pod(
+    core_api: CoreV1Api,
+    job_name: str,
+    namespace: str,
+    timeout_seconds: int,
+) -> V1Pod:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        pods = await asyncio.to_thread(
+            core_api.list_namespaced_pod,
+            namespace,
+            label_selector=f"batch.kubernetes.io/job-name={job_name}",
+            _request_timeout=5,
+        )
+        running_pods = [pod for pod in pods.items if pod.status is not None and pod.status.phase == "Running"]
+        if running_pods:
+            assert len(running_pods) == 1
+            return running_pods[0]
+        if time.monotonic() >= deadline:
+            pytest.fail(f"Job {job_name} had no Running worker Pod within {timeout_seconds}s")
         await asyncio.sleep(0.5)
 
 
@@ -334,14 +357,15 @@ async def test_work_item_cancel_reaches_cancelled(
 
         attempt_id = f"{assigned.id}-{assigned.claim_generation}"
         job_name = "syntara-node-" + hashlib.sha256(attempt_id.encode()).hexdigest()[:32]
+        core_api = CoreV1Api(kubernetes_batch_api.api_client)
 
         processing_task = asyncio.create_task(
             _process_item(assigned, work_store, target_store, worker_managers, settings)
         )
 
         try:
-            await _wait_for_job(
-                kubernetes_batch_api,
+            await _wait_for_running_pod(
+                core_api,
                 job_name,
                 namespace,
                 _JOB_WAIT_TIMEOUT_SECONDS,
@@ -357,7 +381,7 @@ async def test_work_item_cancel_reaches_cancelled(
             await processing_task
             await _assert_job_cleaned_up(
                 kubernetes_batch_api,
-                CoreV1Api(kubernetes_batch_api.api_client),
+                core_api,
                 job_name,
                 namespace,
             )
@@ -373,3 +397,6 @@ async def test_work_item_cancel_reaches_cancelled(
     assert final_item.status is WorkItemStatus.CANCELLED, (
         f"Expected CANCELLED but got {final_item.status}; result={final_item.result}"
     )
+    assert final_item.result is not None
+    assert final_item.result["cancelled"] is True
+    assert final_item.result["execution_started"] is True
