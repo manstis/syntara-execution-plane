@@ -18,4 +18,5 @@ htmlcov/
 .secrets/
 .worktrees/
 .vscode/
+.remember/
 docs/superpowers/
