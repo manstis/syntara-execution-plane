@@ -23,12 +23,13 @@ from kubernetes.client import ApiException, BatchV1Api, V1Job, V1PodSpec
 from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.config import EPSettings, get_ep_settings
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
+from execution_plane.execution_target_reconciler.adapters import build_placement_resolver
 from execution_plane.execution_target_reconciler.placement import WorkerManagerRegistry
 from execution_plane.models.execution_target import BackendType
 from execution_plane.models.execution_target_placement import KubernetesPlacement
 from execution_plane.models.work_item import WorkItemStatus
 from execution_plane.work_store import WorkStore
-from execution_plane.worker import _process_item
+from execution_plane.worker import _place_reserved_item, _process_item
 from execution_plane.worker_manager.vanilla_k8s.manager import VanillaK8sWorkerManager
 
 if TYPE_CHECKING:
@@ -113,8 +114,8 @@ async def test_work_item_dispatched_to_kind_cluster_reaches_completed(ep_cluster
     """Submit a script work item and assert it completes through a single dispatch cycle.
 
     The ep_cluster fixture provisions an ACTIVE Cluster+ExecutionTarget backed by
-    the kind cluster provisioned in CI. claim_one() assigns that target to the work
-    item; _process_item() drives the full cold-start pod lifecycle synchronously.
+    the kind cluster provisioned in CI. The worker reserves the item, PlacementResolver
+    assigns its target, and _process_item() drives the cold-start pod lifecycle.
     """
     database_url = os.environ["EP_TEST_DATABASE_URL"]
     settings = get_ep_settings()
@@ -134,13 +135,20 @@ async def test_work_item_dispatched_to_kind_cluster_reaches_completed(ep_cluster
             },
         )
 
-        claimed = await work_store.claim_one()
-        assert claimed is not None, "claim_one() returned None — no eligible target is ACTIVE"
-        assert claimed.id == item.id
-
         worker_managers = _worker_managers(target_store, cluster_store, work_store, settings)
+        placement_resolver = build_placement_resolver(cluster_store, target_store, worker_managers)
 
-        await _process_item(claimed, work_store, target_store, worker_managers, settings)
+        reserved = await work_store.reserve_one()
+        assert reserved is not None, "reserve_one() returned None — no queued work is available"
+        assert reserved.id == item.id
+        assert reserved.status is WorkItemStatus.CLAIMED
+
+        assigned = await _place_reserved_item(reserved, work_store, placement_resolver)
+        assert assigned is not None, "PlacementResolver assigned no eligible target"
+        assert assigned.id == item.id
+        assert assigned.execution_target_id is not None
+
+        await _process_item(assigned, work_store, target_store, worker_managers, settings)
 
         final_item = await work_store.get(item.id, client_id=client_id)
 
@@ -193,18 +201,24 @@ async def test_work_item_dispatched_to_kind_cluster_includes_node_selector_in_po
                 },
             )
 
-            claimed = await work_store.claim_one()
-            assert claimed is not None
-            assert claimed.id == item.id
-            assert claimed.status is WorkItemStatus.CLAIMED
+            worker_managers = _worker_managers(target_store, cluster_store, work_store, settings)
+            placement_resolver = build_placement_resolver(cluster_store, target_store, worker_managers)
 
-            attempt_id = f"{claimed.id}-{claimed.claim_generation}"
+            reserved = await work_store.reserve_one()
+            assert reserved is not None
+            assert reserved.id == item.id
+            assert reserved.status is WorkItemStatus.CLAIMED
+
+            assigned = await _place_reserved_item(reserved, work_store, placement_resolver)
+            assert assigned is not None
+            assert assigned.id == item.id
+            assert assigned.execution_target_id is not None
+
+            attempt_id = f"{assigned.id}-{assigned.claim_generation}"
             job_name = "syntara-node-" + hashlib.sha256(attempt_id.encode()).hexdigest()[:32]
 
-            worker_managers = _worker_managers(target_store, cluster_store, work_store, settings)
-
             processing_task = asyncio.create_task(
-                _process_item(claimed, work_store, target_store, worker_managers, settings)
+                _process_item(assigned, work_store, target_store, worker_managers, settings)
             )
 
             try:
