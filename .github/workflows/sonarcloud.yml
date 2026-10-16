@@ -26,12 +26,6 @@ jobs:
       && github.event.workflow_run.event == 'pull_request'
       && github.event.workflow_run.head_repository.full_name != github.event.workflow_run.repository.full_name
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          fetch-depth: 0
-          show-progress: false
-
       - name: Fetch PR number
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -58,10 +52,14 @@ jobs:
             printf 'head=%s\n' "$pr_head"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Checkout PR branch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr checkout "${{ steps.pr.outputs.number }}"
+      - name: Checkout tested commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: ${{ github.event.workflow_run.head_repository.full_name }}
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          show-progress: false
+          persist-credentials: false
 
       - name: Download combined coverage
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -81,7 +79,7 @@ jobs:
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2 # v7
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_TOKEN: ${{ secrets[vars.SONAR_TOKEN_SECRET_NAME] }}
         with:
           args: >-
             -Dsonar.projectKey=syntara-orchestration_syntara-execution-plane
