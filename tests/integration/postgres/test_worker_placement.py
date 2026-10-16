@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
@@ -23,7 +25,7 @@ from execution_plane.models.work_item import WorkItem, WorkItemStatus
 from execution_plane.work_store import WorkStore
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -37,6 +39,16 @@ if TYPE_CHECKING:
     )
 
 pytestmark = pytest.mark.integration
+
+
+@dataclass
+class _PlacementFixture:
+    cluster_id: UUID
+    target_id: UUID
+    work_id: UUID
+    sessions: async_sessionmaker[AsyncSession]
+    work_store: WorkStore
+    resolver: PlacementResolver
 
 
 class _StalePlacementResolver:
@@ -139,11 +151,14 @@ async def _cleanup_work(sessions: async_sessionmaker[AsyncSession], ids: tuple[U
             await session.delete(cluster)
 
 
-async def test_worker_places_reserved_item_on_the_matching_postgres_target(
+@asynccontextmanager
+async def _placement(
     placement_database: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
-) -> None:
+    *,
+    matching: bool,
+) -> AsyncGenerator[_PlacementFixture, None]:
     engine, sessions = placement_database
-    ids = await _seed_work(sessions, matching=True)
+    cluster_id, target_id, work_id = await _seed_work(sessions, matching=matching)
 
     try:
         async with (
@@ -151,52 +166,109 @@ async def test_worker_places_reserved_item_on_the_matching_postgres_target(
             ClusterStore.from_engine(engine) as cluster_store,
             ExecutionTargetStore.from_engine(engine) as target_store,
         ):
-            resolver = build_placement_resolver(cluster_store, target_store)
-            reserved = await work_store.reserve_one()
-            assert reserved is not None
-            assert reserved.id == ids[2]
-
-            assigned = await worker._place_reserved_item(reserved, work_store, resolver)
-
-            assert assigned is not None
-            assert assigned.id == ids[2]
-            assert assigned.execution_target_id == ids[1]
-            assert assigned.status is WorkItemStatus.CLAIMED
-            assert assigned.claim_owner_id is not None
-            assert assigned.claim_generation == 1
-
-        async with sessions() as session:
-            persisted = await session.get(WorkItem, ids[2])
-            assert persisted is not None
-            assert persisted.execution_target_id == ids[1]
-            assert persisted.status is WorkItemStatus.CLAIMED
+            yield _PlacementFixture(
+                cluster_id=cluster_id,
+                target_id=target_id,
+                work_id=work_id,
+                sessions=sessions,
+                work_store=work_store,
+                resolver=build_placement_resolver(cluster_store, target_store),
+            )
     finally:
-        await _cleanup_work(sessions, ids)
+        await _cleanup_work(sessions, (cluster_id, target_id, work_id))
+
+
+async def _reserve_work_item(work_store: WorkStore, work_id: UUID) -> WorkItem:
+    reserved = await work_store.reserve_one()
+    assert reserved is not None
+    assert reserved.id == work_id
+    return reserved
+
+
+async def _assert_work_item_is_pending(sessions: async_sessionmaker[AsyncSession], work_id: UUID) -> None:
+    async with sessions() as session:
+        persisted = await session.get(WorkItem, work_id)
+        assert persisted is not None
+        assert persisted.status is WorkItemStatus.PENDING
+        assert persisted.execution_target_id is None
+        assert persisted.claim_owner_id is None
+        assert persisted.claimed_at is None
+        assert persisted.result is None
+
+
+async def _assert_stale_target_releases_reservation(
+    placement_database: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
+    make_target_stale: Callable[[_PlacementFixture, WorkItem], Awaitable[None]],
+) -> None:
+    async with _placement(placement_database, matching=True) as placement:
+        reserved = await _reserve_work_item(placement.work_store, placement.work_id)
+        assert reserved.status is WorkItemStatus.CLAIMED
+
+        stale_result = await placement.resolver.resolve(worker._requirements_for(reserved))
+        assert stale_result.available_targets[0].id == placement.target_id
+
+        await make_target_stale(placement, reserved)
+
+        assigned = await worker._place_reserved_item(
+            reserved,
+            placement.work_store,
+            cast("PlacementResolver", _StalePlacementResolver(placement.resolver, stale_result)),
+        )
+
+        assert assigned is None
+
+        await _assert_work_item_is_pending(placement.sessions, placement.work_id)
+
+
+async def _change_target_labels(placement: _PlacementFixture, reserved: WorkItem) -> None:
+    selector_key = next(iter(reserved.payload["selectors"]))
+    async with placement.sessions.begin() as session:
+        target = await session.get(ExecutionTarget, placement.target_id)
+        assert target is not None
+        target.labels = {selector_key: "changed-after-resolution"}
+
+
+async def _disable_cluster(placement: _PlacementFixture, _reserved: WorkItem) -> None:
+    async with placement.sessions.begin() as session:
+        cluster = await session.get(Cluster, placement.cluster_id)
+        assert cluster is not None
+        cluster.enabled = False
+
+
+async def test_worker_places_reserved_item_on_the_matching_postgres_target(
+    placement_database: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
+) -> None:
+    async with _placement(placement_database, matching=True) as placement:
+        reserved = await _reserve_work_item(placement.work_store, placement.work_id)
+
+        assigned = await worker._place_reserved_item(reserved, placement.work_store, placement.resolver)
+
+        assert assigned is not None
+        assert assigned.id == placement.work_id
+        assert assigned.execution_target_id == placement.target_id
+        assert assigned.status is WorkItemStatus.CLAIMED
+        assert assigned.claim_owner_id is not None
+        assert assigned.claim_generation == 1
+
+        async with placement.sessions() as session:
+            persisted = await session.get(WorkItem, placement.work_id)
+            assert persisted is not None
+            assert persisted.execution_target_id == placement.target_id
+            assert persisted.status is WorkItemStatus.CLAIMED
 
 
 async def test_worker_fails_reserved_item_when_postgres_has_no_matching_target(
     placement_database: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
 ) -> None:
-    engine, sessions = placement_database
-    ids = await _seed_work(sessions, matching=False)
+    async with _placement(placement_database, matching=False) as placement:
+        reserved = await _reserve_work_item(placement.work_store, placement.work_id)
 
-    try:
-        async with (
-            WorkStore.from_engine(engine) as work_store,
-            ClusterStore.from_engine(engine) as cluster_store,
-            ExecutionTargetStore.from_engine(engine) as target_store,
-        ):
-            resolver = build_placement_resolver(cluster_store, target_store)
-            reserved = await work_store.reserve_one()
-            assert reserved is not None
-            assert reserved.id == ids[2]
+        assigned = await worker._place_reserved_item(reserved, placement.work_store, placement.resolver)
 
-            assigned = await worker._place_reserved_item(reserved, work_store, resolver)
+        assert assigned is None
 
-            assert assigned is None
-
-        async with sessions() as session:
-            persisted = await session.get(WorkItem, ids[2])
+        async with placement.sessions() as session:
+            persisted = await session.get(WorkItem, placement.work_id)
             assert persisted is not None
             assert persisted.status is WorkItemStatus.FAILED
             assert persisted.result == {
@@ -205,98 +277,15 @@ async def test_worker_fails_reserved_item_when_postgres_has_no_matching_target(
             }
             assert persisted.completed_at is not None
             assert persisted.claim_owner_id is None
-    finally:
-        await _cleanup_work(sessions, ids)
 
 
 async def test_worker_releases_reservation_when_target_labels_change_during_placement(
     placement_database: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
 ) -> None:
-    engine, sessions = placement_database
-    ids = await _seed_work(sessions, matching=True)
-
-    try:
-        async with (
-            WorkStore.from_engine(engine) as work_store,
-            ClusterStore.from_engine(engine) as cluster_store,
-            ExecutionTargetStore.from_engine(engine) as target_store,
-        ):
-            resolver = build_placement_resolver(cluster_store, target_store)
-            reserved = await work_store.reserve_one()
-            assert reserved is not None
-            assert reserved.id == ids[2]
-            assert reserved.status is WorkItemStatus.CLAIMED
-
-            stale_result = await resolver.resolve(worker._requirements_for(reserved))
-            assert stale_result.available_targets[0].id == ids[1]
-
-            selector_key = next(iter(reserved.payload["selectors"]))
-            async with sessions.begin() as session:
-                target = await session.get(ExecutionTarget, ids[1])
-                assert target is not None
-                target.labels = {selector_key: "changed-after-resolution"}
-
-            assigned = await worker._place_reserved_item(
-                reserved,
-                work_store,
-                cast("PlacementResolver", _StalePlacementResolver(resolver, stale_result)),
-            )
-
-            assert assigned is None
-
-        async with sessions() as session:
-            persisted = await session.get(WorkItem, ids[2])
-            assert persisted is not None
-            assert persisted.status is WorkItemStatus.PENDING
-            assert persisted.execution_target_id is None
-            assert persisted.claim_owner_id is None
-            assert persisted.claimed_at is None
-            assert persisted.result is None
-    finally:
-        await _cleanup_work(sessions, ids)
+    await _assert_stale_target_releases_reservation(placement_database, _change_target_labels)
 
 
 async def test_worker_releases_reservation_when_cluster_is_disabled_during_placement(
     placement_database: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
 ) -> None:
-    engine, sessions = placement_database
-    ids = await _seed_work(sessions, matching=True)
-
-    try:
-        async with (
-            WorkStore.from_engine(engine) as work_store,
-            ClusterStore.from_engine(engine) as cluster_store,
-            ExecutionTargetStore.from_engine(engine) as target_store,
-        ):
-            resolver = build_placement_resolver(cluster_store, target_store)
-            reserved = await work_store.reserve_one()
-            assert reserved is not None
-            assert reserved.id == ids[2]
-            assert reserved.status is WorkItemStatus.CLAIMED
-
-            stale_result = await resolver.resolve(worker._requirements_for(reserved))
-            assert stale_result.available_targets[0].id == ids[1]
-
-            async with sessions.begin() as session:
-                cluster = await session.get(Cluster, ids[0])
-                assert cluster is not None
-                cluster.enabled = False
-
-            assigned = await worker._place_reserved_item(
-                reserved,
-                work_store,
-                cast("PlacementResolver", _StalePlacementResolver(resolver, stale_result)),
-            )
-
-            assert assigned is None
-
-        async with sessions() as session:
-            persisted = await session.get(WorkItem, ids[2])
-            assert persisted is not None
-            assert persisted.status is WorkItemStatus.PENDING
-            assert persisted.execution_target_id is None
-            assert persisted.claim_owner_id is None
-            assert persisted.claimed_at is None
-            assert persisted.result is None
-    finally:
-        await _cleanup_work(sessions, ids)
+    await _assert_stale_target_releases_reservation(placement_database, _disable_cluster)
