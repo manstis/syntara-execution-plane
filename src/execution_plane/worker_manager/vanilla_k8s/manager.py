@@ -123,10 +123,16 @@ class VanillaK8sWorkerManager:
                 result = _map_result(frame, output_config)
                 status = WorkItemStatus.COMPLETED
             except NodeExecutionError as exc:
-                result = {"error": str(exc), "error_type": exc.error_type}
-                if exc.output is not None:
-                    result["output"] = exc.output
-                status = WorkItemStatus.FAILED
+                if cancelled.is_set() and exc.error_type == "CancelledError":
+                    result = {"cancelled": True, "execution_started": True, "reason": str(exc)}
+                    if exc.output is not None:
+                        result["output"] = exc.output
+                    status = WorkItemStatus.CANCELLED
+                else:
+                    result = {"error": str(exc), "error_type": exc.error_type}
+                    if exc.output is not None:
+                        result["output"] = exc.output
+                    status = WorkItemStatus.FAILED
             await self._work_store.set_result(
                 work_item.id,
                 result,

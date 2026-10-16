@@ -18,7 +18,7 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING
 
 import pytest
-from kubernetes.client import ApiException, BatchV1Api, V1Job, V1PodSpec
+from kubernetes.client import ApiException, BatchV1Api, CoreV1Api, V1Job, V1PodSpec
 
 from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.config import EPSettings, get_ep_settings
@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
 _NODE_IMAGE = "quay.io/ahetheri/syntara-node-script:migration-test"
 _WORKLOAD_WAIT_SECONDS = 5
+_CANCEL_WORKLOAD_WAIT_SECONDS = 15
 _JOB_WAIT_TIMEOUT_SECONDS = 30
 
 _SCRIPT_INVOCATION = {
@@ -57,6 +58,16 @@ _SLEEP_SCRIPT_INVOCATION = {
     "workflow_context": {},
     "settings": {},
     "timeout_seconds": 90,
+}
+
+_CANCEL_SCRIPT_INVOCATION = {
+    "version": 1,
+    "operation": "execute",
+    "inputs": {"language": "bash", "code": f"sleep {_CANCEL_WORKLOAD_WAIT_SECONDS}"},
+    "credentials": {"resolved": {}},
+    "workflow_context": {},
+    "settings": {},
+    "timeout_seconds": 60,
 }
 
 
@@ -94,6 +105,23 @@ def _assert_pod_spec(pod_spec: V1PodSpec) -> None:
     assert toleration.operator == "Equal"
     assert (toleration.value or "") == ""
     assert toleration.effect == "NoSchedule"
+
+
+async def _assert_job_cleaned_up(
+    batch_api: BatchV1Api,
+    core_api: CoreV1Api,
+    job_name: str,
+    namespace: str,
+) -> None:
+    job = await _read_job(batch_api, job_name, namespace)
+    pods = await asyncio.to_thread(
+        core_api.list_namespaced_pod,
+        namespace,
+        label_selector=f"batch.kubernetes.io/job-name={job_name}",
+        _request_timeout=5,
+    )
+    assert job is None
+    assert not pods.items
 
 
 def _worker_managers(
@@ -257,4 +285,91 @@ async def test_work_item_dispatched_to_kind_cluster_includes_node_selector_in_po
     assert final_item is not None
     assert final_item.status is WorkItemStatus.COMPLETED, (
         f"Expected COMPLETED but got {final_item.status}; result={final_item.result}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_work_item_cancel_reaches_cancelled(
+    ep_cluster: Cluster,
+    kubernetes_batch_api: BatchV1Api,
+) -> None:
+    """AAP-95962: cancel a running script work item and confirm it reaches CANCELLED."""
+    database_url = os.environ["EP_TEST_DATABASE_URL"]
+    settings = get_ep_settings()
+    client_id = "ep-it-cancel"
+
+    async with (
+        WorkStore.from_database_url(database_url) as work_store,
+        ClusterStore.from_database_url(database_url) as cluster_store,
+        ExecutionTargetStore.from_database_url(database_url) as target_store,
+    ):
+        targets = await target_store.list(cluster_id=ep_cluster.id)
+        assert targets, "Expected the kind fixture to provision an ExecutionTarget"
+        target = targets[0]
+        assert isinstance(target.placement, KubernetesPlacement)
+        namespace = target.placement.namespace
+
+        item = await work_store.dispatch(
+            client_id=client_id,
+            item_id=uuid.uuid4(),
+            payload={
+                "image": _NODE_IMAGE,
+                "invocation": _CANCEL_SCRIPT_INVOCATION,
+            },
+        )
+
+        worker_managers = _worker_managers(target_store, cluster_store, work_store, settings)
+        placement_resolver = build_placement_resolver(cluster_store, target_store, worker_managers)
+
+        reserved = await work_store.reserve_one()
+        assert reserved is not None
+        assert reserved.id == item.id
+        assert reserved.status is WorkItemStatus.CLAIMED
+
+        assigned = await _place_reserved_item(reserved, work_store, placement_resolver)
+        assert assigned is not None
+        assert assigned.id == item.id
+        assert assigned.execution_target_id is not None
+
+        attempt_id = f"{assigned.id}-{assigned.claim_generation}"
+        job_name = "syntara-node-" + hashlib.sha256(attempt_id.encode()).hexdigest()[:32]
+
+        processing_task = asyncio.create_task(
+            _process_item(assigned, work_store, target_store, worker_managers, settings)
+        )
+
+        try:
+            await _wait_for_job(
+                kubernetes_batch_api,
+                job_name,
+                namespace,
+                _JOB_WAIT_TIMEOUT_SECONDS,
+            )
+
+            dispatched_item = await work_store.get(item.id, client_id=client_id)
+            assert dispatched_item is not None
+            assert dispatched_item.status is WorkItemStatus.DISPATCHED
+
+            cancel_requested = await work_store.request_cancel(item.id, client_id=client_id)
+            assert cancel_requested.status is WorkItemStatus.CANCEL_REQUESTED
+
+            await processing_task
+            await _assert_job_cleaned_up(
+                kubernetes_batch_api,
+                CoreV1Api(kubernetes_batch_api.api_client),
+                job_name,
+                namespace,
+            )
+
+            final_item = await work_store.get(item.id, client_id=client_id)
+        finally:
+            if not processing_task.done():
+                processing_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await processing_task
+
+    assert final_item is not None
+    assert final_item.status is WorkItemStatus.CANCELLED, (
+        f"Expected CANCELLED but got {final_item.status}; result={final_item.result}"
     )
