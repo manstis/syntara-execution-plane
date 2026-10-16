@@ -21,10 +21,14 @@ The shared PostgreSQL fixtures (``migrated_database`` etc.) come from the parent
 from __future__ import annotations
 
 import os
+import tempfile
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from kubernetes import client as kubernetes_client
+from kubernetes.client import BatchV1Api
 
 from execution_plane.cluster.cluster_registry import ClusterRegistry, NoopDiscoveryMechanism
 from execution_plane.cluster.cluster_store import ClusterStore
@@ -102,3 +106,28 @@ async def ep_cluster(migrated_database: str) -> AsyncGenerator[Cluster, None]:
             await cluster_store.finalize_delete(cluster.id)
         await cluster_store.close()
         await target_store.close()
+
+
+@pytest.fixture(scope="session")
+async def kubernetes_batch_api(ep_cluster: Cluster) -> AsyncGenerator[BatchV1Api, None]:
+    """Read Kubernetes resources through the configured test cluster credentials."""
+    endpoint = os.environ[_EP_IT_ENDPOINT]
+    token = os.environ[_EP_IT_TOKEN]
+    ca_cert = os.environ.get(_EP_IT_CA_CERT)
+
+    configuration = kubernetes_client.Configuration()
+    configuration.host = endpoint
+    configuration.api_key["authorization"] = token
+    configuration.api_key["BearerToken"] = token
+    configuration.api_key_prefix["authorization"] = "Bearer"
+    configuration.api_key_prefix["BearerToken"] = "Bearer"
+    configuration.verify_ssl = True
+
+    with tempfile.TemporaryDirectory(prefix="ep-it-k8s-ca-") as ca_directory:
+        if ca_cert:
+            ca_path = Path(ca_directory) / "ca.pem"
+            ca_path.write_text(ca_cert, encoding="utf-8")
+            configuration.ssl_ca_cert = str(ca_path)
+
+        with kubernetes_client.ApiClient(configuration) as api_client:
+            yield BatchV1Api(api_client)

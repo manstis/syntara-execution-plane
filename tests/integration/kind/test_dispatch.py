@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
-import subprocess
 import time
 import uuid
 from contextlib import suppress
+from http import HTTPStatus
+from typing import TYPE_CHECKING
 
 import pytest
+from kubernetes.client import ApiException, BatchV1Api, V1Job, V1PodSpec
 
 from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.config import EPSettings, get_ep_settings
@@ -29,6 +30,9 @@ from execution_plane.models.work_item import WorkItemStatus
 from execution_plane.work_store import WorkStore
 from execution_plane.worker import _process_item
 from execution_plane.worker_manager.vanilla_k8s.manager import VanillaK8sWorkerManager
+
+if TYPE_CHECKING:
+    from execution_plane.models.cluster import Cluster
 
 _NODE_IMAGE = "quay.io/ahetheri/syntara-node-script:migration-test"
 _WORKLOAD_WAIT_SECONDS = 5
@@ -55,24 +59,40 @@ _SLEEP_SCRIPT_INVOCATION = {
 }
 
 
-def _read_job(job_name: str, namespace: str) -> dict[str, object]:
-    result = subprocess.run(
-        ["kubectl", "get", "job", job_name, "-n", namespace, "-o", "json"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return json.loads(result.stdout)
+async def _read_job(batch_api: BatchV1Api, job_name: str, namespace: str) -> V1Job | None:
+    try:
+        return await asyncio.to_thread(
+            batch_api.read_namespaced_job,
+            job_name,
+            namespace,
+            _request_timeout=5,
+        )
+    except ApiException as exc:
+        if exc.status == HTTPStatus.NOT_FOUND:
+            return None
+        raise
 
 
-def _assert_pod_spec(pod_spec: dict[str, object]) -> None:
-    assert pod_spec["nodeSelector"] == {"kubernetes.io/os": "linux"}
-    tolerations = pod_spec["tolerations"]
+async def _wait_for_job(batch_api: BatchV1Api, job_name: str, namespace: str, timeout_seconds: int) -> V1Job:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        job = await _read_job(batch_api, job_name, namespace)
+        if job is not None:
+            return job
+        if time.monotonic() >= deadline:
+            pytest.fail(f"Job {job_name} was not created within {timeout_seconds}s")
+        await asyncio.sleep(0.5)
+
+
+def _assert_pod_spec(pod_spec: V1PodSpec) -> None:
+    assert pod_spec.node_selector == {"kubernetes.io/os": "linux"}
+    tolerations = pod_spec.tolerations
     assert len(tolerations) == 1
-    assert tolerations[0]["key"] == "node-role.kubernetes.io/control-plane"
-    assert tolerations[0]["operator"] == "Equal"
-    assert tolerations[0].get("value", "") == ""
-    assert tolerations[0]["effect"] == "NoSchedule"
+    toleration = tolerations[0]
+    assert toleration.key == "node-role.kubernetes.io/control-plane"
+    assert toleration.operator == "Equal"
+    assert (toleration.value or "") == ""
+    assert toleration.effect == "NoSchedule"
 
 
 def _worker_managers(
@@ -89,7 +109,7 @@ def _worker_managers(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_work_item_dispatched_to_kind_cluster_reaches_completed(ep_cluster) -> None:
+async def test_work_item_dispatched_to_kind_cluster_reaches_completed(ep_cluster: Cluster) -> None:
     """Submit a script work item and assert it completes through a single dispatch cycle.
 
     The ep_cluster fixture provisions an ACTIVE Cluster+ExecutionTarget backed by
@@ -132,12 +152,14 @@ async def test_work_item_dispatched_to_kind_cluster_reaches_completed(ep_cluster
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_work_item_dispatched_to_kind_cluster_includes_node_selector_in_pod_spec(ep_cluster) -> None:
+async def test_work_item_dispatched_to_kind_cluster_includes_node_selector_in_pod_spec(
+    ep_cluster: Cluster,
+    kubernetes_batch_api: BatchV1Api,
+) -> None:
     """AAP-97337: configured node selectors must reach the dispatched PodSpec."""
     database_url = os.environ["EP_TEST_DATABASE_URL"]
     settings = get_ep_settings()
     client_id = "ep-it-node-selector"
-    namespace = os.environ["EP_IT_K8S_NAMESPACE"]
 
     async with (
         WorkStore.from_database_url(database_url) as work_store,
@@ -148,6 +170,8 @@ async def test_work_item_dispatched_to_kind_cluster_includes_node_selector_in_po
         assert targets, "Expected the kind fixture to provision an ExecutionTarget"
         target = targets[0]
         original_placement = target.placement
+        assert isinstance(original_placement, KubernetesPlacement)
+        namespace = original_placement.namespace
 
         await target_store.update(
             target.id,
@@ -184,17 +208,17 @@ async def test_work_item_dispatched_to_kind_cluster_includes_node_selector_in_po
             )
 
             try:
-                deadline = time.monotonic() + _JOB_WAIT_TIMEOUT_SECONDS
-                job = None
-                while job is None:
-                    try:
-                        job = await asyncio.to_thread(_read_job, job_name, namespace)
-                    except subprocess.CalledProcessError:
-                        if time.monotonic() >= deadline:
-                            raise
-                        await asyncio.sleep(0.5)
+                job = await _wait_for_job(
+                    kubernetes_batch_api,
+                    job_name,
+                    namespace,
+                    _JOB_WAIT_TIMEOUT_SECONDS,
+                )
 
-                pod_spec = job["spec"]["template"]["spec"]
+                assert job.spec is not None
+                assert job.spec.template is not None
+                assert job.spec.template.spec is not None
+                pod_spec = job.spec.template.spec
                 _assert_pod_spec(pod_spec)
 
                 dispatched_item = await work_store.get(item.id, client_id=client_id)
