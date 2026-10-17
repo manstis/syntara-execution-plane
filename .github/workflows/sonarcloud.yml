@@ -29,7 +29,7 @@ jobs:
       && github.event.workflow_run.head_repository.full_name != github.event.workflow_run.repository.full_name
     steps:
       - name: Fetch PR number
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ep-pr-number
           path: .
@@ -71,7 +71,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout tested commit
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.event.workflow_run.head_repository.full_name }}
           ref: ${{ github.event.workflow_run.head_sha }}
@@ -88,7 +88,7 @@ jobs:
           gh api "repos/${{ github.repository }}/contents/sonar-project.properties" --jq .content | base64 -d > pr/sonar-project.properties
 
       - name: Download combined coverage
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ep-coverage-combined
           path: pr
@@ -103,7 +103,7 @@ jobs:
           test -s pr/pytest-results.xml
 
       - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2 # v7
+        uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2 # v7.2.1
         env:
           SONAR_TOKEN: ${{ secrets[vars.SONAR_TOKEN_SECRET_NAME] }}
           SONARCLOUD_URL: https://sonarcloud.io
