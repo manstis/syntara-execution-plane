@@ -24,11 +24,11 @@ PostgreSQL server.
   compose bootstrap creates these; apply EP Alembic migrations with the same
   EP payload-encryption key that the API and worker use.
 - A local Kind cluster with a CNI that enforces NetworkPolicy. The EP worker
-  container must reach the Kubernetes API server and use a target credential
-  scoped to the workload namespace.
-- Valid TLS for the EP API and AO callback, plus the verified Kubernetes API
-  CA for the target. Do not disable certificate validation to work around a
-  missing or hostname-mismatched CA.
+  container must reach the Kubernetes API server and use an AO-managed target
+  credential scoped to the workload namespace.
+- Valid TLS for the EP API, AO completion callback, AO credential-resolution
+  callback, plus the verified Kubernetes API CA for the target. Do not disable
+  certificate validation to work around a missing or hostname-mismatched CA.
 - A script node image pinned by digest and available to the Kind node.
 
 ## Flow to exercise
@@ -36,7 +36,8 @@ PostgreSQL server.
 1. Start PostgreSQL, create the separate EP database/roles, run AO migrations,
    and run EP migrations independently.
 2. Start the EP API/worker and AO/Temporal services. Configure AO's EP URL,
-   AO JWT issuer/key, EP callback URL, and callback mTLS identity.
+   AO JWT issuer/key, EP completion and credential-resolution callback URLs,
+   and callback mTLS identity.
 3. Create an OpenShift integration through AO's integration API or UI, using a
    ServiceAccount credential scoped to the Kind workload namespace and its
    verified CA. Wait for the integration sync status to report `ready`; do not

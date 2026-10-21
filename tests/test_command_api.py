@@ -118,7 +118,7 @@ async def test_ingress_rejects_before_domain_effects(change, status):
     elif change == "revision":
         message["command"]["command_revision"] = 99
     elif change == "private":
-        message["command"]["payload"] = {"credential": "private-secret"}
+        message["command"]["payload"] = {"credential_ref": str(uuid4())}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://ep.test") as client:
         response = await client.post("/v1/commands", json=message)
     assert response.status_code == status

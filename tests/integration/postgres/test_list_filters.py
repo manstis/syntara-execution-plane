@@ -84,10 +84,9 @@ INVALID_REQUESTS = [
     "status[bogus]=failed",
     "unknown=foo",
     "client_id=other",
-    "credential=secret",
-    "api_key=secret",
+    "credential_ref=00000000-0000-0000-0000-000000000000",
     "payload[contains]=secret",
-    "sort=credential",
+    "sort=credential_ref",
     "sort=unknown",
     "sort=last_ran_at",
 ]

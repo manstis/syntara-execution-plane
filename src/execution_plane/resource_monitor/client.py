@@ -1,7 +1,7 @@
-"""Kubernetes API client factory from Cluster credentials.
+"""Kubernetes API client factory from resolved Cluster credentials.
 
 The vanilla Kubernetes Worker Manager can import this module when it needs the
-same Cluster.endpoint + Cluster.api_key construction. Do not log credentials.
+same Cluster.endpoint construction. Do not log credentials.
 """
 
 from __future__ import annotations
@@ -23,11 +23,11 @@ class KubernetesClientError(ValueError):
     """The Cluster credential could not be turned into a Kubernetes client."""
 
 
-def api_client_from_cluster(cluster: Cluster) -> AbstractContextManager[client.ApiClient]:
-    """Build an ApiClient from a Cluster row. Use as a context manager."""
+def api_client_from_cluster(cluster: Cluster, credential: str) -> AbstractContextManager[client.ApiClient]:
+    """Build an ApiClient from a Cluster row and resolved credential."""
     return api_client_from_credentials(
         endpoint=cluster.endpoint,
-        api_key=cluster.api_key,
+        api_key=credential,
         ca_certificate=cluster.ca_certificate,
     )
 
@@ -58,9 +58,9 @@ def api_client_from_credentials(
             yield api_client
 
 
-def read_namespace(cluster: Cluster, namespace: str, *, timeout_seconds: float) -> None:
+def read_namespace(cluster: Cluster, credential: str, namespace: str, *, timeout_seconds: float) -> None:
     """GET /api/v1/namespaces/{namespace}. Raises ApiException on non-2xx."""
-    with api_client_from_cluster(cluster) as api_client:
+    with api_client_from_cluster(cluster, credential) as api_client:
         client.CoreV1Api(api_client).read_namespace(namespace, _request_timeout=timeout_seconds)
 
 

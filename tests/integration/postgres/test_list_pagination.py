@@ -58,7 +58,7 @@ async def _insert_cluster_and_targets(sessions, client_id: str, count: int) -> t
         source_integration_id=uuid.uuid4(),
         name="test-cluster",
         endpoint="https://cluster.test",
-        api_key="secret",
+        credential_ref=uuid.uuid4(),
         status=ClusterStatus.ACTIVE,
         created_by=uuid.uuid4(),
         updated_by=uuid.uuid4(),
@@ -80,7 +80,7 @@ async def _insert_cluster_and_targets(sessions, client_id: str, count: int) -> t
                 status=TargetStatus.ACTIVE,
                 enabled=True,
                 is_default=False,
-                api_key="secret",
+                credential_ref=uuid.uuid4(),
                 labels={},
                 created_by=uuid.uuid4(),
                 updated_by=uuid.uuid4(),
@@ -205,7 +205,7 @@ async def test_nullable_work_item_sorts_rejected(sort_client, sort):
 
 
 @pytest.mark.parametrize("path", ["/v1/clusters", "/v1/execution-targets"])
-@pytest.mark.parametrize("sort", ["placement", "credential", "last_ran_at", "cowabunga"])
+@pytest.mark.parametrize("sort", ["placement", "credential_ref", "last_ran_at", "cowabunga"])
 async def test_unsupported_resource_sort_rejected(pg_client, path, sort):
     client, _, _ = pg_client
     response = await client.get(path, params={"sort": sort})
@@ -341,9 +341,9 @@ async def test_work_items_unknown_sort_field(pg_client):
 
 
 async def test_work_items_sort_by_encrypted_field_rejected(pg_client):
-    """Sorting by an encrypted field (api_key) is not allowed and returns 422."""
+    """Sorting by a credential reference is not allowed and returns 422."""
     client, _, _cid = pg_client
-    assert (await client.get("/v1/work-items", params={"sort": "api_key"})).status_code == 422
+    assert (await client.get("/v1/work-items", params={"sort": "credential_ref"})).status_code == 422
 
 
 async def test_work_items_malformed_cursor(pg_client):

@@ -71,7 +71,7 @@ class TargetRegisterCommandHandler:
                 name=command.name,
                 backend_type=BackendType(command.backend_type),
                 endpoint=command.endpoint,
-                api_key=command.credential,
+                credential_ref=command.credential_ref,
                 is_default=False,
                 created_by=SYSTEM_ACTOR,
                 placement=TypeAdapter(ExecutionTargetPlacement).validate_python(command.placement.model_dump()),
@@ -108,7 +108,7 @@ class TargetUpdateCommandHandler:
                 updated_by=SYSTEM_ACTOR,
                 name=command.name,
                 endpoint=command.endpoint,
-                api_key=command.credential,
+                credential_ref=command.credential_ref,
                 labels=command.labels,
                 placement=None
                 if command.placement is None

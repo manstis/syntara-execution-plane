@@ -35,6 +35,7 @@ from sqlmodel import col
 
 from execution_plane.cluster.cluster_registrar import ClusterRegistrar, NoopDiscoveryMechanism
 from execution_plane.cluster.cluster_store import ClusterStore
+from execution_plane.credential_resolution.resolver import CredentialResolutionError, CredentialResolver
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.models.cluster import Cluster, ClusterType
 from execution_plane.models.execution_target import ExecutionTarget
@@ -50,7 +51,27 @@ _EP_IT_NAMESPACE = "EP_IT_K8S_NAMESPACE"
 _EP_IT_CA_CERT = "EP_IT_K8S_CA_CERT"
 _DEFAULT_NAMESPACE = "execution-plane"
 _CLUSTER_NAME = "integration-test"
+_CLUSTER_CLIENT_ID = "ep-integration-tests"
+_CREDENTIAL_REF = uuid.uuid5(uuid.NAMESPACE_URL, "https://execution-plane.test/integrations/kind")
 _CLI_ACTOR_ID = uuid.UUID(int=0)
+
+
+class StaticCredentialResolver(CredentialResolver):
+    """Return the live test-cluster token without requiring an AO callback."""
+
+    def __init__(self, credential: str) -> None:
+        """Store the in-memory test credential."""
+        self._credential = credential
+
+    async def resolve(self, credential_ref: uuid.UUID, *, client_id: str) -> str:
+        """Return the configured test credential for the integration Cluster."""
+        if credential_ref != _CREDENTIAL_REF or client_id != _CLUSTER_CLIENT_ID:
+            message = "Integration resolver received an unexpected credential reference"
+            raise CredentialResolutionError(message)
+        return self._credential
+
+    async def close(self) -> None:
+        """Keep the test credential in memory only."""
 
 
 async def _delete_fixture_cluster(database_url: str, cluster_id: uuid.UUID) -> None:
@@ -89,7 +110,6 @@ async def ep_cluster(migrated_database: str) -> AsyncGenerator[Cluster, None]:
         pytest.skip("EP_IT_K8S_ENDPOINT and EP_IT_K8S_TOKEN must be set for cluster dispatch tests")
 
     endpoint = os.environ[_EP_IT_ENDPOINT]
-    token = os.environ[_EP_IT_TOKEN]
     namespace = os.environ.get(_EP_IT_NAMESPACE, _DEFAULT_NAMESPACE)
     ca_cert = os.environ.get(_EP_IT_CA_CERT)
 
@@ -103,11 +123,13 @@ async def ep_cluster(migrated_database: str) -> AsyncGenerator[Cluster, None]:
         cluster = await cluster_registrar.provision(
             _CLUSTER_NAME,
             endpoint,
-            token,
+            _CREDENTIAL_REF,
             KubernetesPlacement(namespace=namespace),
             _CLI_ACTOR_ID,
             labels={"provider": "kind", "cluster": _CLUSTER_NAME},
             cluster_type=ClusterType.OPENSHIFT,
+            source_client_id=_CLUSTER_CLIENT_ID,
+            source_integration_id=uuid.uuid4(),
         )
 
         if ca_cert:
@@ -151,3 +173,9 @@ async def kubernetes_batch_api(ep_cluster: Cluster) -> AsyncGenerator[BatchV1Api
 
         with kubernetes_client.ApiClient(configuration) as api_client:
             yield BatchV1Api(api_client)
+
+
+@pytest.fixture(scope="session")
+def integration_credential_resolver(ep_cluster: Cluster) -> CredentialResolver:
+    """Provide an AO-free resolver for the live integration Cluster."""
+    return StaticCredentialResolver(os.environ[_EP_IT_TOKEN])

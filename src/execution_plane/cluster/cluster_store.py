@@ -59,7 +59,7 @@ class ClusterStore(StoreBase):
         self,
         name: str,
         endpoint: str,
-        api_key: str,
+        credential_ref: uuid.UUID,
         created_by: uuid.UUID,
         labels: dict[str, str] | None = None,
         *,
@@ -75,7 +75,7 @@ class ClusterStore(StoreBase):
         cluster = Cluster(
             name=name,
             endpoint=endpoint,
-            api_key=api_key,
+            credential_ref=credential_ref,
             ca_certificate=ca_certificate,
             cluster_type=cluster_type,
             source_client_id=source_client_id,
@@ -100,18 +100,18 @@ class ClusterStore(StoreBase):
                 raise
 
     async def get(self, cluster_id: uuid.UUID) -> Cluster | None:
-        """Return a Cluster with its credentials redacted."""
+        """Return a Cluster with its CA certificate redacted."""
         async with self._session_context() as session:
             cluster = await session.get(Cluster, cluster_id)
             return None if cluster is None else self._without_secret(cluster)
 
     async def get_with_credentials(self, cluster_id: uuid.UUID) -> Cluster | None:
-        """Return a Cluster with its API credential and CA certificate intact."""
+        """Return a Cluster with its CA certificate intact."""
         async with self._session_context() as session:
             return await session.get(Cluster, cluster_id)
 
     async def get_by_name(self, name: str) -> Cluster | None:
-        """Return a Cluster by name without its API credential."""
+        """Return a Cluster by name without its CA certificate."""
         async with self._session_context() as session:
             result = await session.execute(select(Cluster).where(col(Cluster.name) == name).limit(1))
             cluster = result.scalar_one_or_none()
@@ -211,7 +211,7 @@ class ClusterStore(StoreBase):
         updated_by: uuid.UUID,
         name: str | None = None,
         endpoint: str | None = None,
-        api_key: str | None = None,
+        credential_ref: uuid.UUID | None = None,
         ca_certificate: str | None = None,
         labels: dict[str, str] | None = None,
     ) -> Cluster:
@@ -225,8 +225,8 @@ class ClusterStore(StoreBase):
                     cluster.name = name
                 if endpoint is not None:
                     cluster.endpoint = endpoint
-                if api_key is not None:
-                    cluster.api_key = api_key
+                if credential_ref is not None:
+                    cluster.credential_ref = credential_ref
                 if ca_certificate is not None:
                     cluster.ca_certificate = ca_certificate
                 if labels is not None:
@@ -311,7 +311,7 @@ class ClusterStore(StoreBase):
         *,
         updated_by: uuid.UUID,
         endpoint: str | None = None,
-        api_key: str | None = None,
+        credential_ref: uuid.UUID | None = None,
         ca_certificate: str | None = None,
         labels: dict[str, str] | None = None,
     ) -> Cluster:
@@ -326,8 +326,8 @@ class ClusterStore(StoreBase):
                 cluster.status_message = None
                 if endpoint is not None:
                     cluster.endpoint = endpoint
-                if api_key is not None:
-                    cluster.api_key = api_key
+                if credential_ref is not None:
+                    cluster.credential_ref = credential_ref
                 if ca_certificate is not None:
                     cluster.ca_certificate = ca_certificate
                 if labels is not None:
@@ -439,4 +439,4 @@ class ClusterStore(StoreBase):
 
     @staticmethod
     def _without_secret(cluster: Cluster) -> Cluster:
-        return cluster.model_copy(update={"api_key": "", "ca_certificate": None})
+        return cluster.model_copy(update={"ca_certificate": None})

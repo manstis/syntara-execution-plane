@@ -27,6 +27,11 @@ class _StoreContext:
         self.events.append(f"{self.name}:stop")
 
 
+class _CredentialResolver:
+    async def close(self) -> None:
+        return None
+
+
 class _DrainMonitor:
     def __init__(
         self,
@@ -97,10 +102,11 @@ async def test_run_worker_wires_placement_resolver_to_the_poll_loop(monkeypatch:
     monkeypatch.setattr(
         worker,
         "ResourceMonitor",
-        lambda target, cluster, settings: _ResourceMonitor(target, cluster, settings, events),
+        lambda target, cluster, settings, **_kwargs: _ResourceMonitor(target, cluster, settings, events),
     )
     monkeypatch.setattr(worker, "CompletionNotifier", lambda _settings: _CompletionDelivery(SimpleNamespace(), events))
-    monkeypatch.setattr(worker, "VanillaK8sWorkerManager", lambda *_args: workload_manager)
+    monkeypatch.setattr(worker, "CredentialResolver", lambda _settings: _CredentialResolver())
+    monkeypatch.setattr(worker, "VanillaK8sWorkerManager", lambda *_args, **_kwargs: workload_manager)
 
     def build_resolver(cluster: object, target: object, managers: WorkerManagerRegistry) -> object:
         built_with.append((cluster, target, managers))
@@ -152,10 +158,11 @@ async def test_run_worker_owns_drain_monitor_for_the_worker_lifetime(monkeypatch
     monkeypatch.setattr(
         worker,
         "ResourceMonitor",
-        lambda target, cluster, settings: _ResourceMonitor(target, cluster, settings, events),
+        lambda target, cluster, settings, **_kwargs: _ResourceMonitor(target, cluster, settings, events),
     )
     monkeypatch.setattr(worker, "CompletionNotifier", lambda settings: _CompletionDelivery(settings, events))
-    monkeypatch.setattr(worker, "VanillaK8sWorkerManager", lambda *_args: object())
+    monkeypatch.setattr(worker, "CredentialResolver", lambda _settings: _CredentialResolver())
+    monkeypatch.setattr(worker, "VanillaK8sWorkerManager", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(worker, "build_placement_resolver", lambda *_args: object())
     monkeypatch.setattr(worker, "_listen_loop", _finished_listener)
     monkeypatch.setattr(worker, "_poll_loop", _finished_poller)

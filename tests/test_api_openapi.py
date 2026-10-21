@@ -30,7 +30,7 @@ def test_command_oneof_accepts_overlapping_payload_shapes_with_the_correct_type(
         "name": "workers",
         "endpoint": "https://cluster.test",
         "namespace": "ep",
-        "credential": "secret",
+        "credential_ref": str(uuid4()),
     }
     message = command_message(kind, payload)
     validator = _validator(create_app().openapi())
@@ -74,6 +74,7 @@ def test_command_oneof_accepts_overlapping_payload_shapes_with_the_correct_type(
                 "name": "workers",
                 "backend_type": "vanilla_k8s",
                 "endpoint": "https://cluster.test",
+                "credential_ref": str(uuid4()),
                 "placement": {"type": "kubernetes", "namespace": "ep"},
             },
         ),

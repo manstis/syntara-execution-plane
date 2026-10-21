@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from execution_plane.credential_resolution.resolver import CredentialResolutionError, CredentialResolver
 from execution_plane.execution_target.execution_target_store import ExecutionTargetNotFoundError
 from execution_plane.models.execution_target import TargetStatus
 from execution_plane.resource_monitor.probes import DispatchingTargetProbe, ProbeResult
@@ -35,12 +36,14 @@ class ResourceMonitor:
         settings: EPSettings,
         *,
         probe: TargetProbe | None = None,
+        credential_resolver: CredentialResolver | None = None,
         interval: float | None = None,
     ) -> None:
         """Create a monitor using Cluster and ExecutionTarget stores and EP settings."""
         self._target_queries = target_queries
         self._cluster_credentials = cluster_credentials
         self._probe = probe or DispatchingTargetProbe(timeout_seconds=settings.resource_monitor_probe_timeout_seconds)
+        self._credential_resolver = credential_resolver or CredentialResolver(settings)
         self._interval = settings.resource_monitor_interval_seconds if interval is None else interval
         self._failure_threshold = settings.resource_monitor_failure_threshold
         self._success_threshold = settings.resource_monitor_success_threshold
@@ -96,13 +99,24 @@ class ResourceMonitor:
         self._successes = {target_id: count for target_id, count in self._successes.items() if target_id in seen}
 
     async def _probe_one(self, target: ExecutionTarget, clusters: dict[uuid.UUID, Cluster | None]) -> None:
-        """Load Cluster credentials, probe, and persist after hysteresis."""
+        """Load Cluster state, resolve its credential, and probe after hysteresis."""
         if target.cluster_id not in clusters:
             clusters[target.cluster_id] = await self._cluster_credentials.get_with_credentials(target.cluster_id)
         cluster = clusters[target.cluster_id]
         if cluster is None:
             return
-        result = await self._probe.probe(cluster, target)
+        if cluster.source_client_id is None:
+            result = ProbeResult(healthy=False, message="Cluster credential could not be resolved")
+        else:
+            try:
+                credential = await self._credential_resolver.resolve(
+                    cluster.credential_ref,
+                    client_id=cluster.source_client_id,
+                )
+            except CredentialResolutionError:
+                result = ProbeResult(healthy=False, message="Cluster credential could not be resolved")
+            else:
+                result = await self._probe.probe(cluster, credential, target)
         if result.skipped:
             self._failures.pop(target.id, None)
             self._successes.pop(target.id, None)

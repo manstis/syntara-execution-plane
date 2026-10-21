@@ -84,7 +84,7 @@ class ExecutionTargetStore(StoreBase):
         name: str,
         backend_type: BackendType,
         endpoint: str,
-        api_key: str,
+        credential_ref: uuid.UUID,
         is_default: bool,  # noqa: FBT001
         created_by: uuid.UUID,
         placement: ExecutionTargetPlacement,
@@ -100,7 +100,7 @@ class ExecutionTargetStore(StoreBase):
             backend_type=backend_type,
             endpoint=endpoint,
             placement=placement,
-            api_key=api_key,
+            credential_ref=credential_ref,
             is_default=is_default,
             labels={},
             created_by=created_by,
@@ -138,13 +138,13 @@ class ExecutionTargetStore(StoreBase):
                 raise
 
     async def get(self, target_id: uuid.UUID) -> ExecutionTarget | None:
-        """Return a target by ID with its credential redacted."""
+        """Return a target by ID."""
         async with self._session_context() as session:
             target = await session.get(ExecutionTarget, target_id)
             return None if target is None else self._without_secret(target)
 
     async def get_with_credentials(self, target_id: uuid.UUID) -> ExecutionTarget | None:
-        """Return a target by ID with its credential intact."""
+        """Return a target by ID with its credential reference intact."""
         async with self._session_context() as session:
             return await session.get(ExecutionTarget, target_id)
 
@@ -302,7 +302,7 @@ class ExecutionTargetStore(StoreBase):
         placement: ExecutionTargetPlacement | None = None,
         labels: dict[str, str] | None = None,
         status_message: str | None = None,
-        api_key: str | None = None,
+        credential_ref: uuid.UUID | None = None,
     ) -> ExecutionTarget:
         """Update mutable target metadata without changing ownership or default status."""
         async with self._session_context() as session:
@@ -320,8 +320,8 @@ class ExecutionTargetStore(StoreBase):
                     target.labels = merge_user_labels(target.labels, labels)
                 if status_message is not None:
                     target.status_message = status_message
-                if api_key is not None:
-                    target.api_key = api_key
+                if credential_ref is not None:
+                    target.credential_ref = credential_ref
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
                 await self._commit(session)
@@ -436,5 +436,5 @@ class ExecutionTargetStore(StoreBase):
 
     @staticmethod
     def _without_secret(target: ExecutionTarget) -> ExecutionTarget:
-        """Return a detached target representation without its API credential."""
-        return target.model_copy(update={"api_key": ""})
+        """Return a detached target representation."""
+        return target

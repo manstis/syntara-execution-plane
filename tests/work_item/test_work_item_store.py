@@ -142,7 +142,7 @@ def _target(target_id: uuid.UUID, cluster: Cluster) -> ExecutionTarget:
         endpoint="https://example.test",
         placement={"type": "static"},
         status=TargetStatus.ACTIVE,
-        api_key="secret",
+        credential_ref=uuid.uuid4(),
         created_by=uuid.uuid4(),
         created_at=datetime.now(UTC),
         updated_by=uuid.uuid4(),

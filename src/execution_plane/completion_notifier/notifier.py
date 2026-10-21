@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-import ssl
 from typing import TYPE_CHECKING
 
 import httpx
 import structlog
 
+from execution_plane.callback_client import CallbackHTTPClient
 from execution_plane.models.work_item import WorkItemStatus
 from execution_plane_client.commands.control import Completion
 from execution_plane_client.protocol import ResourceReference, TransportReceipt
@@ -30,25 +30,18 @@ class CompletionNotifier:
 
     def __init__(self, settings: EPSettings) -> None:
         """Prepare the callback client from EP-owned identity and endpoint settings."""
-        self._url = settings.completion_callback_url
         self._local_id = settings.service_jwt_audience
-        self._client: httpx.AsyncClient | None = None
-        if self._url:
-            ssl_context = ssl.create_default_context(cafile=settings.completion_callback_ca_cert_path)
-            if settings.completion_callback_cert_path and settings.completion_callback_key_path:
-                ssl_context.load_cert_chain(
-                    settings.completion_callback_cert_path,
-                    settings.completion_callback_key_path,
-                )
-            self._client = httpx.AsyncClient(
-                timeout=settings.completion_callback_timeout_seconds,
-                verify=ssl_context,
-            )
+        self._client = CallbackHTTPClient(
+            url=settings.completion_callback_url,
+            ca_cert_path=settings.completion_callback_ca_cert_path,
+            cert_path=settings.completion_callback_cert_path,
+            key_path=settings.completion_callback_key_path,
+            timeout_seconds=settings.completion_callback_timeout_seconds,
+        )
 
     async def close(self) -> None:
         """Close the reusable HTTP connection pool."""
-        if self._client is not None:
-            await self._client.aclose()
+        await self._client.close()
 
     async def run(self, completion_events: WorkStore) -> None:
         """Continuously retry due outbox records; callback failure never loses results."""
@@ -65,7 +58,7 @@ class CompletionNotifier:
         completion_events: WorkStore,
         event: CompletionEvent,
     ) -> None:
-        if self._client is None or self._url is None:
+        if not self._client.configured:
             logger.warning("Completion callback is not configured; retaining event", event_id=str(event.id))
             await completion_events.record_completion_event_attempt(
                 event.id,
@@ -97,13 +90,13 @@ class CompletionNotifier:
             occurred_at=event.created_at,
         )
         try:
-            response = await self._client.post(self._url, json=body.model_dump(mode="json"))
+            response = await self._client.post_json(body.model_dump(mode="json"))
             response.raise_for_status()
             receipt = TransportReceipt.model_validate(response.json())
             if receipt.message_id != body.message_id:
                 error = "Completion receipt does not match its message"
                 raise ValueError(error)  # noqa: TRY301 - A mismatched receipt follows the same retry path.
-        except (httpx.HTTPError, ValueError) as exc:
+        except (httpx.HTTPError, RuntimeError, ValueError) as exc:
             retry_after = min(MAX_RETRY_SECONDS, 2 ** min(event.attempts + 1, 8))
             retry_after = int(retry_after * secrets.SystemRandom().uniform(0.8, 1.2))
             await completion_events.record_completion_event_attempt(

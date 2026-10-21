@@ -57,7 +57,7 @@ class _ScriptedProbe:
         self.results = results
         self.calls: list[str] = []
 
-    async def probe(self, cluster: object, target: object) -> ProbeResult:
+    async def probe(self, cluster: object, _credential: str, target: object) -> ProbeResult:
         del cluster
         self.calls.append(target.name)  # type: ignore[attr-defined]
         if isinstance(self.results, Exception):
@@ -65,6 +65,16 @@ class _ScriptedProbe:
         if isinstance(self.results, ProbeResult):
             return self.results
         return self.results[target.name]  # type: ignore[attr-defined]
+
+
+class _Resolver:
+    def __init__(self, credential: str) -> None:
+        self.credential = credential
+        self.calls: list[tuple[object, str]] = []
+
+    async def resolve(self, credential_ref: object, *, client_id: str) -> str:
+        self.calls.append((credential_ref, client_id))
+        return self.credential
 
 
 def _monitor(
@@ -83,11 +93,13 @@ def _monitor(
     ep_settings = settings(**overrides)
     target_store = _TargetStore(targets)
     cluster_store = _ClusterStore(clusters)
+    resolver = _Resolver("resolved-token")
     monitor = ResourceMonitor(
         target_store,  # type: ignore[arg-type]
         cluster_store,  # type: ignore[arg-type]
         ep_settings,
         probe=probe,  # type: ignore[arg-type]
+        credential_resolver=resolver,  # type: ignore[arg-type]
         interval=0.01,
     )
     return monitor, target_store, cluster_store
@@ -107,6 +119,37 @@ async def test_hysteresis_requires_consecutive_failures_before_degraded() -> Non
     await monitor.scan()
     assert target_store.health == [(target.id, False, "Kubernetes API timed out", RESOURCE_MONITOR_ACTOR_ID)]
     assert cluster_store.credential_reads == [cluster.id, cluster.id, cluster.id]
+
+
+@pytest.mark.asyncio
+async def test_monitor_resolves_the_cluster_reference_before_probing() -> None:
+    cluster = make_cluster()
+    cluster.source_client_id = "syntara-orchestration"
+    target = make_target(cluster)
+    resolver = _Resolver("resolved-token")
+
+    class RecordingProbe:
+        def __init__(self) -> None:
+            self.credentials: list[str] = []
+
+        async def probe(self, _cluster: object, credential: str, _target: object) -> ProbeResult:
+            self.credentials.append(credential)
+            return ProbeResult(healthy=True)
+
+    probe = RecordingProbe()
+    monitor = ResourceMonitor(
+        _TargetStore([target]),  # type: ignore[arg-type]
+        _ClusterStore({cluster.id: cluster}),  # type: ignore[arg-type]
+        settings(),
+        probe=probe,  # type: ignore[arg-type]
+        interval=0.01,
+        credential_resolver=resolver,  # type: ignore[arg-type]
+    )
+
+    await monitor.scan()
+
+    assert resolver.calls == [(cluster.credential_ref, "syntara-orchestration")]
+    assert probe.credentials == ["resolved-token"]
 
 
 @pytest.mark.asyncio
@@ -138,7 +181,7 @@ async def test_success_resets_failure_streak() -> None:
     )
 
     class Alternating:
-        async def probe(self, cluster: object, target: object) -> ProbeResult:
+        async def probe(self, cluster: object, _credential: str, target: object) -> ProbeResult:
             del cluster, target
             return next(results)
 
@@ -155,7 +198,7 @@ async def test_one_failing_target_does_not_prevent_probing_the_next() -> None:
     good = make_target(cluster, name="good")
 
     class MixedProbe:
-        async def probe(self, cluster: object, target: object) -> ProbeResult:
+        async def probe(self, cluster: object, _credential: str, target: object) -> ProbeResult:
             del cluster
             if target.name == "bad":  # type: ignore[attr-defined]
                 message = "boom"

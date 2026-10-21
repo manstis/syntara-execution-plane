@@ -28,7 +28,7 @@ def _binding(*, name: str, is_default: bool) -> ClusterBinding:
         name=name,
         endpoint=f"https://{name}.example",
         namespace="ep",
-        credential="secret",
+        credential_ref=uuid4(),
         is_default=is_default,
         created_at=now,
         updated_at=now,
@@ -36,7 +36,7 @@ def _binding(*, name: str, is_default: bool) -> ClusterBinding:
 
 
 async def _active_cluster(store: ClusterStore, actor_id: UUID, name: str) -> Cluster:
-    cluster = await store.create(name, f"https://{name}.example", "secret", actor_id)
+    cluster = await store.create(name, f"https://{name}.example", uuid4(), actor_id)
     return await store.record_discovery_state(cluster.id, ClusterStatus.ACTIVE, None, actor_id)
 
 

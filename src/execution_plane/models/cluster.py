@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Column, Index, Integer, String, UniqueConstraint, text
+from sqlalchemy import Column, Index, Integer, String, UniqueConstraint, Uuid, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import DateTime
@@ -60,7 +60,7 @@ class Cluster(SQLModel, table=True):
     enabled: bool = Field(default=True, nullable=False)
     is_default: bool = Field(default=False, nullable=False)
     status_message: str | None = Field(default=None, nullable=True)
-    api_key: str = Field(sa_column=Column(EncryptedCredential(), nullable=False), repr=False, exclude=True)
+    credential_ref: uuid.UUID = Field(sa_column=Column(Uuid(), nullable=False))
     ca_certificate: str | None = Field(
         default=None,
         sa_column=Column(EncryptedCredential(), nullable=True),

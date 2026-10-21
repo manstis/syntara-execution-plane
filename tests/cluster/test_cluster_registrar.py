@@ -27,7 +27,7 @@ def _cluster(*, status: ClusterStatus = ClusterStatus.REGISTERING, is_default: b
         id=uuid.uuid4(),
         name="cluster-a",
         endpoint="https://cluster.example",
-        api_key="cluster-secret",
+        credential_ref=uuid.uuid4(),
         status=status,
         is_default=is_default,
         created_by=uuid.uuid4(),
@@ -44,7 +44,7 @@ def _target(*, cluster_id: uuid.UUID | None = None, is_default: bool = False) ->
         cluster_id=cluster_id or uuid.uuid4(),
         name="target-a",
         endpoint="https://target.example",
-        api_key="target-secret",
+        credential_ref=uuid.uuid4(),
         backend_type=BackendType.VANILLA_K8S,
         is_default=is_default,
         status=TargetStatus.ACTIVE,
@@ -132,17 +132,18 @@ async def test_store_creates_a_registering_cluster_and_owns_commit() -> None:
     session = _Session()
     store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
     actor_id = uuid.uuid4()
+    credential_ref = uuid.uuid4()
 
     cluster = await store.create(
-        "cluster-a", "https://cluster.example", "cluster-secret", actor_id, {"region": "eu-west"}
+        "cluster-a", "https://cluster.example", credential_ref, actor_id, {"region": "eu-west"}
     )
 
     assert cluster.status is ClusterStatus.REGISTERING
     assert cluster.enabled is True
     assert cluster.cluster_type is ClusterType.OPENSHIFT
-    assert cluster.api_key == ""
+    assert cluster.credential_ref == credential_ref
     assert session.added is not None
-    assert session.added.api_key == "cluster-secret"
+    assert session.added.credential_ref == credential_ref
     assert session.added.cluster_type is ClusterType.OPENSHIFT
     assert session.added.created_by == actor_id
     assert session.commits == 1
@@ -160,7 +161,7 @@ async def test_store_persists_an_explicit_cluster_type() -> None:
     cluster = await store.create(
         "cluster-a",
         "https://cluster.example",
-        "cluster-secret",
+        uuid.uuid4(),
         uuid.uuid4(),
         cluster_type=ClusterType.RHEL,
     )
@@ -180,7 +181,7 @@ async def test_store_rolls_back_failed_cluster_creation() -> None:
     store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
 
     with pytest.raises(RuntimeError, match="database unavailable"):
-        await store.create("cluster-a", "https://cluster.example", "secret", uuid.uuid4())
+        await store.create("cluster-a", "https://cluster.example", uuid.uuid4(), uuid.uuid4())
 
     assert session.rollbacks == 1
     await store.close()
@@ -268,7 +269,7 @@ class _ClusterStore:
         self,
         _name: str,
         _endpoint: str,
-        _api_key: str,
+        _credential_ref: uuid.UUID,
         _created_by: uuid.UUID,
         _labels: dict[str, str] | None = None,
         *,
@@ -289,7 +290,7 @@ class _ClusterStore:
         updated_by: uuid.UUID,
         name: str | None = None,
         endpoint: str | None = None,
-        api_key: str | None = None,
+        credential_ref: uuid.UUID | None = None,
         ca_certificate: str | None = None,
         labels: dict[str, str] | None = None,
     ) -> Cluster:
@@ -297,7 +298,7 @@ class _ClusterStore:
             "updated_by": updated_by,
             "name": name,
             "endpoint": endpoint,
-            "api_key": api_key,
+            "credential_ref": credential_ref,
             "ca_certificate": ca_certificate,
             "labels": labels,
         }
@@ -325,7 +326,7 @@ class _ClusterStore:
         *,
         updated_by: uuid.UUID,
         endpoint: str | None = None,
-        api_key: str | None = None,
+        credential_ref: uuid.UUID | None = None,
         ca_certificate: str | None = None,
         labels: dict[str, str] | None = None,
     ) -> Cluster:
@@ -363,7 +364,7 @@ class _TargetService:
         name: str,
         backend_type: BackendType,
         endpoint: str,
-        api_key: str,
+        credential_ref: uuid.UUID,
         is_default: bool,  # noqa: FBT001
         created_by: uuid.UUID,
         placement: ExecutionTargetPlacement,
@@ -377,7 +378,7 @@ class _TargetService:
                 "name": name,
                 "backend_type": backend_type,
                 "endpoint": endpoint,
-                "api_key": api_key,
+                "credential_ref": credential_ref,
                 "is_default": is_default,
                 "created_by": created_by,
                 "placement": placement,
@@ -420,7 +421,7 @@ class _TargetService:
         placement: ExecutionTargetPlacement | None = None,
         labels: dict[str, str] | None = None,
         status_message: str | None = None,
-        api_key: str | None = None,
+        credential_ref: uuid.UUID | None = None,
     ) -> ExecutionTarget:
         self.updated.append(
             {
@@ -430,7 +431,7 @@ class _TargetService:
                 "placement": placement,
                 "labels": labels,
                 "status_message": status_message,
-                "api_key": api_key,
+                "credential_ref": credential_ref,
             }
         )
         return self.targets[0]
@@ -465,7 +466,7 @@ async def test_registrar_creates_cluster_with_identity_label_and_cleanses_user_l
     cluster = await service.provision(
         "cluster-a",
         "https://cluster.example",
-        "cluster-secret",
+        uuid.uuid4(),
         KubernetesPlacement(namespace="execution"),
         uuid.uuid4(),
         labels={"region": "eu-west", "_cluster_id": "user-supplied", "_internal": "user-supplied"},
@@ -487,7 +488,7 @@ async def test_registrar_provision_promotes_the_requested_global_default() -> No
     result = await service.provision(
         "cluster-a",
         "https://cluster.example",
-        "cluster-secret",
+        uuid.uuid4(),
         KubernetesPlacement(namespace="execution"),
         actor_id,
         is_default=True,
@@ -510,7 +511,7 @@ async def test_registrar_provision_bootstraps_a_default_when_none_exists() -> No
     result = await service.provision(
         "cluster-a",
         "https://cluster.example",
-        "cluster-secret",
+        uuid.uuid4(),
         KubernetesPlacement(namespace="execution"),
         actor_id,
         is_default=False,
@@ -589,7 +590,7 @@ async def test_registrar_reactivate_preserves_the_cluster_identity_label() -> No
     await service.provision(
         "cluster-a",
         "https://cluster.example",
-        "cluster-secret",
+        uuid.uuid4(),
         KubernetesPlacement(namespace="execution"),
         uuid.uuid4(),
         labels={"region": "new", "_cluster_id": "spoofed", "_internal": "spoofed"},
@@ -629,7 +630,7 @@ async def test_registrar_creates_every_discovered_target_via_target_port_then_ac
     )
     service = ClusterRegistrar(store, targets, discovery)
 
-    result = await service.register("cluster-a", "https://cluster.example", "cluster-secret", uuid.uuid4())
+    result = await service.register("cluster-a", "https://cluster.example", uuid.uuid4(), uuid.uuid4())
 
     assert result.status is ClusterStatus.ACTIVE
     assert [target["is_default"] for target in targets.created] == [True, False]
@@ -668,7 +669,7 @@ async def test_registrar_register_promotes_the_requested_global_default() -> Non
     result = await service.register(
         "cluster-a",
         "https://cluster.example",
-        "cluster-secret",
+        uuid.uuid4(),
         actor_id,
         is_default=True,
     )
@@ -690,7 +691,7 @@ async def test_registrar_marks_persisted_cluster_error_when_discovery_or_default
     store = _ClusterStore(cluster)
     failed_discovery = ClusterRegistrar(store, _TargetService(), _Discovery(DiscoveryResult.failed("unreachable")))
 
-    result = await failed_discovery.register("cluster-a", "https://cluster.example", "cluster-secret", uuid.uuid4())
+    result = await failed_discovery.register("cluster-a", "https://cluster.example", uuid.uuid4(), uuid.uuid4())
 
     assert result.status is ClusterStatus.ERROR
     assert store.states == [(ClusterStatus.ERROR, "discovery failed")]
@@ -716,7 +717,7 @@ async def test_registrar_marks_persisted_cluster_error_when_discovery_or_default
         ),
     )
 
-    result = await default_failure.register("cluster-a", "https://cluster.example", "cluster-secret", uuid.uuid4())
+    result = await default_failure.register("cluster-a", "https://cluster.example", uuid.uuid4(), uuid.uuid4())
 
     assert result.status is ClusterStatus.ERROR
     assert "default target" in (result.status_message or "")
@@ -730,7 +731,7 @@ async def test_registrar_marks_persisted_cluster_error_when_discovery_raises() -
     store = _ClusterStore(cluster)
     service = ClusterRegistrar(store, _TargetService(), _FailingDiscovery())
 
-    result = await service.register("cluster-a", "https://cluster.example", "cluster-secret", uuid.uuid4())
+    result = await service.register("cluster-a", "https://cluster.example", uuid.uuid4(), uuid.uuid4())
 
     assert result.status is ClusterStatus.ERROR
     assert result.status_message == "discovery failed"
@@ -757,7 +758,7 @@ async def test_registrar_marks_cluster_error_when_discovery_returns_no_single_de
     )
 
     result = await ClusterRegistrar(store, _TargetService(), discovery).register(
-        "cluster-a", "https://cluster.example", "secret", uuid.uuid4()
+        "cluster-a", "https://cluster.example", uuid.uuid4(), uuid.uuid4()
     )
 
     assert result.status is ClusterStatus.ERROR
@@ -794,7 +795,7 @@ async def test_registrar_keeps_cluster_active_when_a_non_default_target_fails() 
     )
 
     result = await ClusterRegistrar(store, targets, discovery).register(
-        "cluster-a", "https://cluster.example", "secret", uuid.uuid4()
+        "cluster-a", "https://cluster.example", uuid.uuid4(), uuid.uuid4()
     )
 
     assert result.status is ClusterStatus.ACTIVE
@@ -826,7 +827,8 @@ async def test_reactivate_preserves_the_current_default_target_configuration() -
     cluster.enabled = False
     target = _target(cluster_id=cluster.id, is_default=True)
     target.endpoint = "https://independent-target.example"
-    target.api_key = "independent-target-secret"
+    independent_credential_ref = uuid.uuid4()
+    target.credential_ref = independent_credential_ref
     target.placement = KubernetesPlacement(
         namespace="independent",
         node_selectors=["independent=true"],
@@ -834,19 +836,20 @@ async def test_reactivate_preserves_the_current_default_target_configuration() -
     )
     targets = _TargetService(targets=[target])
     actor_id = uuid.uuid4()
+    target_credential_ref = uuid.uuid4()
     service = ClusterRegistrar(_ClusterStore(cluster), targets, _Discovery(object()))
 
     await service.provision(
         "cluster-a",
         "https://cluster.example",
-        "cluster-secret",
+        target_credential_ref,
         KubernetesPlacement(namespace="updated"),
         actor_id,
     )
 
     assert targets.reactivated == [{"target_id": target.id, "updated_by": actor_id}]
     assert target.endpoint == "https://independent-target.example"
-    assert target.api_key == "independent-target-secret"
+    assert target.credential_ref == independent_credential_ref
     assert isinstance(target.placement, KubernetesPlacement)
     assert target.placement.namespace == "independent"
 
@@ -890,7 +893,7 @@ async def test_sync_update_forwards_cluster_ca_certificate_to_cluster_store() ->
 def test_noop_discovery_returns_a_failed_result() -> None:
     from execution_plane.cluster.cluster_registrar import ClusterRegistration, NoopDiscoveryMechanism
 
-    result = NoopDiscoveryMechanism().discover(ClusterRegistration("name", "endpoint", "secret", {}))
+    result = NoopDiscoveryMechanism().discover(ClusterRegistration("name", "endpoint", uuid.uuid4(), {}))
 
     assert result.state.value == "failed"
     assert result.status_message == "No discovery mechanism is configured"

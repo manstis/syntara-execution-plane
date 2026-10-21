@@ -91,7 +91,7 @@ class TargetDefinition(WireModel):
     backend_type: Literal["vanilla_k8s", "openshell"]
     placement: Placement
     endpoint: Annotated[StrictStr, Field(min_length=1, max_length=2048)]
-    credential: str = Field(default="", repr=False)
+    credential_ref: UUID
     labels: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("endpoint")
@@ -132,7 +132,7 @@ class TargetUpdate(ResourceIdentity, CommandPayload):
     name: Annotated[StrictStr, Field(min_length=1, max_length=255)] | None = None
     endpoint: Annotated[StrictStr, Field(min_length=1, max_length=2048)] | None = None
     placement: Placement | None = None
-    credential: str | None = Field(default=None, repr=False)
+    credential_ref: UUID | None = None
     labels: dict[str, str] | None = None
     is_default: StrictBool | None = None
 

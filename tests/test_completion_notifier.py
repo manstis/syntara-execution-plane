@@ -6,6 +6,8 @@ import ssl
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
+from execution_plane import callback_client as callback_client_module
+from execution_plane.callback_client import CallbackHTTPClient
 from execution_plane.completion_notifier import notifier as event_delivery
 from execution_plane.config import EPSettings
 
@@ -18,8 +20,8 @@ def test_callback_client_loads_client_identity_into_ca_context(monkeypatch: pyte
     context = MagicMock(spec=ssl.SSLContext)
     context_factory = MagicMock(return_value=context)
     client_factory = MagicMock()
-    monkeypatch.setattr(event_delivery.ssl, "create_default_context", context_factory)
-    monkeypatch.setattr(event_delivery.httpx, "AsyncClient", client_factory)
+    monkeypatch.setattr(callback_client_module.ssl, "create_default_context", context_factory)
+    monkeypatch.setattr(callback_client_module.httpx, "AsyncClient", client_factory)
     settings = EPSettings(
         EP_DATABASE_URL="postgresql+asyncpg://user:password@localhost/test",
         EP_COMPLETION_CALLBACK_URL="https://ao.example.test/events",
@@ -28,7 +30,12 @@ def test_callback_client_loads_client_identity_into_ca_context(monkeypatch: pyte
         EP_CALLBACK_KEY_PATH="/secrets/ep.key",
     )
 
-    event_delivery.CompletionNotifier(settings)
+    CallbackHTTPClient(
+        url=settings.completion_callback_url,
+        ca_cert_path=settings.completion_callback_ca_cert_path,
+        cert_path=settings.completion_callback_cert_path,
+        key_path=settings.completion_callback_key_path,
+    )
 
     context_factory.assert_called_once_with(cafile="/secrets/ca.pem")
     context.load_cert_chain.assert_called_once_with("/secrets/ep.crt", "/secrets/ep.key")
@@ -59,7 +66,10 @@ async def test_completion_is_a_stable_command_rebuilt_from_domain_event():
     settings = EPSettings(EP_COMPLETION_CALLBACK_URL="https://ao.test/v1/commands")
     delivery = event_delivery.CompletionNotifier(settings)
     await delivery.close()
-    delivery._client = httpx.AsyncClient(transport=httpx.MockTransport(receive))
+    callback_client = CallbackHTTPClient(url=settings.completion_callback_url)
+    await callback_client.close()
+    callback_client._client = httpx.AsyncClient(transport=httpx.MockTransport(receive))
+    delivery._client = callback_client
     event = CompletionEvent(
         id=uuid4(),
         work_item_id=uuid4(),
@@ -95,11 +105,14 @@ async def test_wrong_completion_receipt_is_retried():
 
     delivery = event_delivery.CompletionNotifier(EPSettings(EP_COMPLETION_CALLBACK_URL="https://ao.test/v1/commands"))
     await delivery.close()
-    delivery._client = httpx.AsyncClient(
+    callback_client = CallbackHTTPClient(url="https://ao.test/v1/commands")
+    await callback_client.close()
+    callback_client._client = httpx.AsyncClient(
         transport=httpx.MockTransport(
             lambda _: httpx.Response(202, json={"received": True, "message_id": str(uuid4())})
         )
     )
+    delivery._client = callback_client
     event = CompletionEvent(
         id=uuid4(),
         work_item_id=uuid4(),

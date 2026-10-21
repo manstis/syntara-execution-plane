@@ -17,7 +17,7 @@ class ClusterConfigBase(WireModel):
     name: Annotated[StrictStr, Field(min_length=1, max_length=255)]
     endpoint: Annotated[StrictStr, Field(max_length=2048)]
     namespace: Annotated[StrictStr, Field(min_length=1, max_length=63, pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")]
-    credential: StrictStr = Field(default="", repr=False)
+    credential_ref: UUID
     ca_certificate: Annotated[StrictStr, Field(max_length=65536)] | None = Field(default=None, repr=False)
     project_ids: list[UUID] | None = None
     labels: dict[str, str] = Field(default_factory=dict)
@@ -49,10 +49,10 @@ class ClusterRegister(ClusterConfigBase, ResourceRevision, CommandPayload):
         return value
 
     @model_validator(mode="after")
-    def check_credential(self) -> Self:
-        """Require credentials for enabled bindings."""
-        if self.enabled and not self.credential:
-            message = "Enabled cluster bindings require a credential"
+    def check_credential_ref(self) -> Self:
+        """Require a resolvable credential reference for enabled bindings."""
+        if self.enabled and self.credential_ref == UUID(int=0):
+            message = "Enabled cluster bindings require a credential_ref"
             raise ValueError(message)
         return self
 
@@ -77,7 +77,7 @@ class ClusterUpdate(ResourceRevision, CommandPayload):
     name: StrictStr | None = None
     endpoint: StrictStr | None = None
     namespace: StrictStr | None = None
-    credential: StrictStr | None = Field(default=None, repr=False)
+    credential_ref: UUID | None = None
     ca_certificate: StrictStr | None = Field(default=None, repr=False)
     project_ids: list[UUID] | None = None
     labels: dict[str, str] | None = None

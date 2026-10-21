@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from pydantic import ValidationError
 
+from execution_plane.credential_resolution.resolver import CredentialResolutionError, CredentialResolver
 from execution_plane.models.execution_target_placement import KubernetesPlacement
 from execution_plane.models.work_item import WorkItemStatus
 from execution_plane.worker_manager.vanilla_k8s.transport import TransportError, run_job
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
 logger = structlog.stdlib.get_logger(__name__)
 
 MAX_STATUS_CODE = 255
+CLUSTER_CREDENTIAL_RESOLUTION_FAILED = "Cluster credential could not be resolved"
 
 
 class RetryableDispatchError(Exception):
@@ -75,12 +77,14 @@ class VanillaK8sWorkerManager:
         cluster_credentials: ClusterStore,
         work_progress: WorkStore,
         settings: EPSettings,
+        credential_resolver: CredentialResolver | None = None,
     ) -> None:
         """Bind this backend to EP-owned stores and cold-start settings."""
         self._target_credentials = target_credentials
         self._cluster_credentials = cluster_credentials
         self._work_progress = work_progress
         self._settings = settings
+        self._credential_resolver = credential_resolver or CredentialResolver(settings)
 
     async def dispatch(self, work_item: WorkItem) -> dict[str, Any]:  # noqa: C901, PLR0915
         """Allocate the worker, stream its result, and persist the WorkItem outcome.
@@ -110,10 +114,11 @@ class VanillaK8sWorkerManager:
         if cluster is None or not cluster.enabled:
             message = "Assigned cluster is unavailable"
             raise RetryableDispatchError(message)
+        credential = await self._resolve_cluster_credential(cluster)
 
         identity = str(work_item.id)
         attempt_id = f"{identity}-{work_item.claim_generation}"
-        target_config = self._k8s_target(target, cluster)
+        target_config = self._k8s_target(target, cluster, credential)
         cancelled = threading.Event()
         loop = asyncio.get_running_loop()
 
@@ -225,7 +230,25 @@ class VanillaK8sWorkerManager:
             exc.persisted = True
             raise
 
-    def _k8s_target(self, target: ExecutionTarget, cluster: Cluster) -> dict[str, Any]:
+    async def _resolve_cluster_credential(self, cluster: Cluster) -> str:
+        """Resolve the Cluster's credential reference for a dispatch attempt."""
+        if cluster.source_client_id is None:
+            message = "Assigned cluster has no credential-resolution client"
+            raise RetryableDispatchError(message)
+        try:
+            return await self._credential_resolver.resolve(
+                cluster.credential_ref,
+                client_id=cluster.source_client_id,
+            )
+        except CredentialResolutionError as exc:
+            raise RetryableDispatchError(CLUSTER_CREDENTIAL_RESOLUTION_FAILED) from exc
+
+    def _k8s_target(
+        self,
+        target: ExecutionTarget,
+        cluster: Cluster,
+        credential: str,
+    ) -> dict[str, Any]:
         """Map an ExecutionTarget onto the connection dict run_job expects.
 
         This is the single place that reads target topology fields. Namespace (and
@@ -240,7 +263,7 @@ class VanillaK8sWorkerManager:
         return {
             "base_url": cluster.endpoint,
             "namespace": placement.namespace,
-            "token": cluster.api_key,
+            "token": credential,
             "ca_certificate": cluster.ca_certificate,
             "verify_ssl": True,
             "node_selectors": placement.node_selectors,

@@ -47,7 +47,7 @@ which work can be executed.
 | `is_default` | Whether this is the protected global default Cluster |
 | `status_message` | Optional human-readable lifecycle or error detail |
 | `labels` | JSONB administration and routing metadata; never secret credentials |
-| `api_key` | Protected credential used to authenticate to the Cluster |
+| `credential_ref` | Required AO UUID identifying the Cluster management credential |
 | `created_by` | Actor or service identity that created the row |
 | `created_at` | Creation timestamp |
 | `updated_by` | Actor or service identity that last changed the row |
@@ -55,9 +55,11 @@ which work can be executed.
 
 The Cluster `endpoint` identifies the control-plane endpoint. It is unique
 across Clusters: two Clusters cannot represent the same endpoint.
-The `api_key` is a protected credential. Raw credentials are write-only and
-are never returned by normal reads, serialized into labels, written to logs,
-or included in API responses.
+`credential_ref` is opaque to EP. EP never persists, logs, or returns the raw
+credential value. Before dispatch, health probing, or Kubernetes reconciliation,
+EP sends a `credential.resolve` command to
+`EP_CREDENTIAL_RESOLUTION_CALLBACK_URL` and uses the correlated
+`CredentialResolution` value only in memory.
 
 `REGISTERING` represents a Cluster whose connectivity, dependencies, or target
 configuration is not yet complete. `ACTIVE` means the Cluster is available to
@@ -91,7 +93,7 @@ exactly one Cluster.
 | `name` | User-facing target name |
 | `backend_type` | Supported execution backend, such as `vanilla_k8s` or `openshell` |
 | `endpoint` | Endpoint used for worker connectivity |
-| `api_key` | Protected credential used to authenticate to the target |
+| `credential_ref` | Required AO UUID identifying the target credential |
 | `status` | `REGISTERING`, `VALIDATING`, `BOOTSTRAPPING`, `ACTIVE`, `DEGRADED`, `DRAINING`, or `FAILED` |
 | `enabled` | Eligibility/configuration gate |
 | `is_default` | Whether this is the Cluster's protected default target |
@@ -109,9 +111,10 @@ document, an execution backend or backend provider is the external system that
 hosts work; it is distinct from the discovery mechanism used during Cluster
 registration.
 
-The target `api_key` follows the same protection rules as the Cluster
-`api_key`. A target may have its own credential when the backend requires it;
-the Cluster credential is not implicitly exposed through the target model.
+The target `credential_ref` follows the same protection rules as the Cluster
+reference. A target may reference its own AO credential when the backend
+requires one; the Cluster credential is not implicitly exposed through the
+target model.
 
 #### ExecutionTarget lifecycle states
 
@@ -491,7 +494,10 @@ WorkItem tables. The schema must provide:
 - indexes for Cluster names, Cluster endpoints, target membership, lifecycle
   status, enabled state, and eligible-target queries;
 - audit columns on every database model;
-- protected storage for target and Cluster `api_key` values.
+- required UUID `credential_ref` values for target and Cluster credentials.
+
+This branch is green-field: the original schema is changed directly and no
+raw-credential migration or backfill is provided.
 
 The design does not prescribe whether the drained predicate is based solely on
 terminal WorkItems, claimed workers, or an additional worker heartbeat. That

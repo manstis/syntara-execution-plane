@@ -5,12 +5,11 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import String
+from sqlalchemy import Uuid
 from sqlmodel import SQLModel
 
 from execution_plane.models.cluster import Cluster, ClusterStatus, ClusterType
 from execution_plane.models.constants import EP_SCHEMA
-from execution_plane.models.credential import EncryptedCredential
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
 from execution_plane.models.execution_target_placement import KubernetesPlacement
 
@@ -33,10 +32,9 @@ def test_cluster_table_exposes_required_lifecycle_and_audit_contract() -> None:
         and {column.name for column in constraint.columns} == {"source_client_id", "source_integration_id"}
         for constraint in table.constraints
     )
-    assert table.c.api_key.nullable is False
+    assert table.c.credential_ref.nullable is False
     assert table.c.labels.type.__class__.__name__ == "JSONB"
-    assert isinstance(table.c.api_key.type, EncryptedCredential)
-    assert isinstance(table.c.api_key.type.impl, String)
+    assert isinstance(table.c.credential_ref.type, Uuid)
     assert table.c.created_at.type.timezone is True
     assert table.c.updated_at.type.timezone is True
     assert {"created_by", "created_at", "updated_by", "updated_at"} <= set(table.c.keys())
@@ -44,10 +42,12 @@ def test_cluster_table_exposes_required_lifecycle_and_audit_contract() -> None:
     assert table.c.status.type.native_enum is False
     assert isinstance(table.c.cluster_type.type, SAEnum)
     assert table.c.cluster_type.type.native_enum is False
-    assert Cluster(endpoint="https://cluster.example", api_key="secret").cluster_type is ClusterType.OPENSHIFT
-    assert repr(Cluster(endpoint="https://cluster.example", api_key="secret"))
-    assert "secret" not in repr(Cluster(endpoint="https://cluster.example", api_key="secret"))
-    assert "api_key" not in Cluster(endpoint="https://cluster.example", api_key="secret").model_dump()
+    credential_ref = uuid.uuid4()
+    assert (
+        Cluster(endpoint="https://cluster.example", credential_ref=credential_ref).cluster_type is ClusterType.OPENSHIFT
+    )
+    assert repr(Cluster(endpoint="https://cluster.example", credential_ref=credential_ref))
+    assert "api_key" not in Cluster(endpoint="https://cluster.example", credential_ref=credential_ref).model_dump()
 
 
 def test_execution_target_belongs_to_cluster_with_default_and_draining_state() -> None:
@@ -69,11 +69,11 @@ def test_execution_target_belongs_to_cluster_with_default_and_draining_state() -
     assert next(iter(table.c.cluster_id.foreign_keys)).target_fullname == "execution_plane.clusters.id"
     assert table.c.is_default.default.arg is False
     assert TargetStatus.DRAINING.value == "draining"
-    assert table.c.api_key.nullable is False
-    assert isinstance(table.c.api_key.type, EncryptedCredential)
-    assert isinstance(table.c.api_key.type.impl, String)
+    assert table.c.credential_ref.nullable is False
+    assert isinstance(table.c.credential_ref.type, Uuid)
     assert table.c.updated_at.type.timezone is True
     assert {"created_by", "created_at", "updated_by", "updated_at"} <= set(table.c.keys())
+    credential_ref = uuid.uuid4()
     assert "secret" not in repr(
         ExecutionTarget(
             cluster_id=uuid.uuid4(),
@@ -81,7 +81,7 @@ def test_execution_target_belongs_to_cluster_with_default_and_draining_state() -
             backend_type=BackendType.VANILLA_K8S,
             endpoint="https://target.example",
             placement=KubernetesPlacement(namespace="execution"),
-            api_key="secret",
+            credential_ref=credential_ref,
         )
     )
     assert (
@@ -92,7 +92,7 @@ def test_execution_target_belongs_to_cluster_with_default_and_draining_state() -
             backend_type=BackendType.VANILLA_K8S,
             endpoint="https://target.example",
             placement=KubernetesPlacement(namespace="default"),
-            api_key="secret",
+            credential_ref=credential_ref,
         ).model_dump()
     )
     assert ExecutionTarget.__mapper__.relationships["cluster"].mapper.class_ is Cluster  # type: ignore[attr-defined]

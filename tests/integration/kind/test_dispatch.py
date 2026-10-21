@@ -38,6 +38,7 @@ from execution_plane.worker_manager.vanilla_k8s.manager import VanillaK8sWorkerM
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from execution_plane.credential_resolution.resolver import CredentialResolver
     from execution_plane.models.cluster import Cluster
     from execution_plane.models.execution_target import ExecutionTarget
 
@@ -137,12 +138,19 @@ async def _work_service(
     cluster_store: ClusterStore,
     target_store: ExecutionTargetStore,
     settings: EPSettings,
+    credential_resolver: CredentialResolver,
 ) -> AsyncIterator[_WorkFixture]:
     worker_managers = WorkerManagerRegistry()
     placement_resolver = build_placement_resolver(cluster_store, target_store, worker_managers)
     async with WorkStore.from_database_url(database_url) as work_item_store:
         work_scheduler = WorkScheduler(work_item_store, placement_resolver)
-        workload_manager = VanillaK8sWorkerManager(target_store, cluster_store, work_item_store, settings)
+        workload_manager = VanillaK8sWorkerManager(
+            target_store,
+            cluster_store,
+            work_item_store,
+            settings,
+            credential_resolver=credential_resolver,
+        )
         worker_managers.register(BackendType.VANILLA_K8S, workload_manager)
         yield _WorkFixture(work_item_store, work_scheduler, worker_managers)
 
@@ -213,7 +221,10 @@ async def _assert_job_cleaned_up(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_work_item_dispatched_to_kind_cluster_reaches_completed(ep_cluster: Cluster) -> None:
+async def test_work_item_dispatched_to_kind_cluster_reaches_completed(
+    ep_cluster: Cluster,
+    integration_credential_resolver: CredentialResolver,
+) -> None:
     """Submit a script work item and assert it completes through a single dispatch cycle.
 
     The ep_cluster fixture provisions an ACTIVE Cluster+ExecutionTarget backed by
@@ -228,7 +239,13 @@ async def test_work_item_dispatched_to_kind_cluster_reaches_completed(ep_cluster
         ClusterStore.from_database_url(database_url) as cluster_store,
         ExecutionTargetStore.from_database_url(database_url) as target_store,
     ):
-        async with _work_service(database_url, cluster_store, target_store, settings) as work:
+        async with _work_service(
+            database_url,
+            cluster_store,
+            target_store,
+            settings,
+            integration_credential_resolver,
+        ) as work:
             dispatched = await _dispatch_item(
                 work,
                 work.worker_managers,
@@ -259,6 +276,7 @@ async def test_work_item_dispatched_to_kind_cluster_reaches_completed(ep_cluster
 async def test_work_item_dispatched_to_kind_cluster_includes_node_selector_in_pod_spec(
     ep_cluster: Cluster,
     kubernetes_batch_api: BatchV1Api,
+    integration_credential_resolver: CredentialResolver,
 ) -> None:
     """AAP-97337: configured node selectors must reach the dispatched PodSpec."""
     database_url = os.environ["EP_TEST_DATABASE_URL"]
@@ -285,7 +303,13 @@ async def test_work_item_dispatched_to_kind_cluster_includes_node_selector_in_po
         )
 
         try:
-            async with _work_service(database_url, cluster_store, target_store, settings) as work:
+            async with _work_service(
+                database_url,
+                cluster_store,
+                target_store,
+                settings,
+                integration_credential_resolver,
+            ) as work:
                 dispatched = await _dispatch_item(
                     work,
                     work.worker_managers,
@@ -352,6 +376,7 @@ async def test_work_item_dispatched_to_kind_cluster_includes_node_selector_in_po
 async def test_work_item_cancel_reaches_cancelled(
     ep_cluster: Cluster,
     kubernetes_batch_api: BatchV1Api,
+    integration_credential_resolver: CredentialResolver,
 ) -> None:
     """AAP-95962: cancel a running script work item and confirm it reaches CANCELLED."""
     database_url = os.environ["EP_TEST_DATABASE_URL"]
@@ -366,7 +391,13 @@ async def test_work_item_cancel_reaches_cancelled(
         assert isinstance(target.placement, KubernetesPlacement)
         namespace = target.placement.namespace
 
-        async with _work_service(database_url, cluster_store, target_store, settings) as work:
+        async with _work_service(
+            database_url,
+            cluster_store,
+            target_store,
+            settings,
+            integration_credential_resolver,
+        ) as work:
             dispatched = await _dispatch_item(
                 work,
                 work.worker_managers,

@@ -103,7 +103,7 @@ async def test_mapped_rows_reload_project_ids_and_work_item_status() -> None:  #
                     name="postgres-type-round-trip",
                     endpoint="https://cluster.invalid",
                     namespace="ep-smoke",
-                    credential="test-credential",
+                    credential_ref=uuid.uuid4(),
                     project_ids=project_ids,
                     created_at=now,
                     updated_at=now,

@@ -41,7 +41,7 @@ def upgrade() -> None:
         sa.Column("name", sa.String(length=255), nullable=False),
         sa.Column("endpoint", sa.String(length=2048), nullable=False),
         sa.Column("namespace", sa.String(length=63), nullable=False),
-        sa.Column("credential", sa.String(), nullable=False),
+        sa.Column("credential_ref", sa.UUID(), nullable=False),
         sa.Column("project_ids", JSONB(), nullable=True),
         sa.Column("labels", JSONB(), server_default="{}", nullable=False),
         sa.Column("enabled", sa.Boolean(), server_default=sa.true(), nullable=False),

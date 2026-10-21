@@ -18,7 +18,7 @@ CLUSTER = {
     "name": "workers",
     "endpoint": "https://cluster.test",
     "namespace": "ep",
-    "credential": "secret",
+    "credential_ref": str(uuid4()),
 }
 
 
@@ -62,6 +62,7 @@ CLUSTER = {
                 "name": "target",
                 "endpoint": "https://cluster.test",
                 "backend_type": "vanilla_k8s",
+                "credential_ref": RESOURCE_ID,
                 "placement": {"type": "kubernetes", "namespace": "ep"},
             },
         ),
@@ -144,7 +145,7 @@ def test_cluster_creation_commands_can_set_the_global_default(payload_class):
         name="workers",
         endpoint="https://cluster.test",
         namespace="ep",
-        credential="secret",
+        credential_ref=uuid4(),
         is_default=True,
     ).to_message(source_id="ao", destination_id="ep", client_id="ao")
 

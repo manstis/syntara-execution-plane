@@ -22,6 +22,7 @@ from execution_plane.models.execution_target_placement import KubernetesPlacemen
 from execution_plane.resource_monitor.monitor import ResourceMonitor
 
 if TYPE_CHECKING:
+    from execution_plane.credential_resolution.resolver import CredentialResolver
     from execution_plane.models.cluster import Cluster
 
 _ACTOR_ID = uuid.UUID(int=0)
@@ -29,7 +30,10 @@ _ACTOR_ID = uuid.UUID(int=0)
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_resource_monitor_excludes_a_missing_namespace_on_kind(ep_cluster: Cluster) -> None:
+async def test_resource_monitor_excludes_a_missing_namespace_on_kind(
+    ep_cluster: Cluster,
+    integration_credential_resolver: CredentialResolver,
+) -> None:
     """Probe the live Kind API: a missing namespace becomes DEGRADED and HEALTH-ineligible."""
     database_url = os.environ["EP_TEST_DATABASE_URL"]
     settings = get_ep_settings().model_copy(
@@ -54,7 +58,7 @@ async def test_resource_monitor_excludes_a_missing_namespace_on_kind(ep_cluster:
             f"missing-{marker}",
             BackendType.VANILLA_K8S,
             ep_cluster.endpoint,
-            "unused",
+            uuid.uuid4(),
             is_default=False,
             created_by=_ACTOR_ID,
             placement=KubernetesPlacement(namespace=missing_namespace),
@@ -63,7 +67,13 @@ async def test_resource_monitor_excludes_a_missing_namespace_on_kind(ep_cluster:
         extra_id = extra.id
         try:
             await target_store.activate(extra.id, _ACTOR_ID)
-            monitor = ResourceMonitor(target_store, cluster_store, settings, interval=0.01)
+            monitor = ResourceMonitor(
+                target_store,
+                cluster_store,
+                settings,
+                credential_resolver=integration_credential_resolver,
+                interval=0.01,
+            )
 
             await monitor.scan()
             after_one = await target_store.get(extra.id)

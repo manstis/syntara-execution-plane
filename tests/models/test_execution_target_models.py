@@ -48,7 +48,7 @@ def test_execution_target_serializes_placement_with_public_name() -> None:
         backend_type=BackendType.VANILLA_K8S,
         endpoint="https://target.example",
         placement=KubernetesPlacement(namespace="default"),
-        api_key="secret",
+        credential_ref=uuid.uuid4(),
     )
 
     serialized = target.model_dump()

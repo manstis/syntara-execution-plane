@@ -33,7 +33,7 @@ def _target(*, is_default: bool = False, status: TargetStatus = TargetStatus.ACT
         backend_type=BackendType.VANILLA_K8S,
         endpoint="https://target.example",
         placement=KubernetesPlacement(namespace="execution"),
-        api_key="secret",
+        credential_ref=uuid.uuid4(),
         is_default=is_default,
         status=status,
         enabled=status is TargetStatus.ACTIVE,
@@ -50,7 +50,7 @@ def _cluster(*, status: ClusterStatus = ClusterStatus.REGISTERING) -> Cluster:
         id=uuid.uuid4(),
         name="cluster-a",
         endpoint="https://cluster.example",
-        api_key="secret",
+        credential_ref=uuid.uuid4(),
         status=status,
         enabled=status in (ClusterStatus.ACTIVE, ClusterStatus.REGISTERING),
         created_by=uuid.uuid4(),
@@ -153,15 +153,15 @@ def _store(session: _Session) -> ExecutionTargetStore:
 
 
 @pytest.mark.asyncio
-async def test_get_redacts_credentials_or_returns_secret_when_requested() -> None:
+async def test_get_preserves_credential_ref() -> None:
     target = _target()
     store = _store(_Session(result=_Result(target)))
 
-    redacted = await store.get(target.id)
+    public = await store.get(target.id)
     included = await store.get_with_credentials(target.id)
 
-    assert redacted is not None
-    assert redacted.api_key == ""
+    assert public is not None
+    assert public.credential_ref == target.credential_ref
     assert included is target
     await store.close()
 
@@ -187,7 +187,7 @@ async def test_list_applies_cluster_status_eligibility_and_limit_filters() -> No
     )
 
     assert len(result) == 1
-    assert result[0].api_key == ""
+    assert result[0].credential_ref == target.credential_ref
     await store.close()
 
 
@@ -246,7 +246,7 @@ async def test_create_rejects_a_cluster_that_is_draining() -> None:
             target.name,
             target.backend_type,
             target.endpoint,
-            target.api_key,
+            target.credential_ref,
             is_default=False,
             created_by=uuid.uuid4(),
             placement=target.placement,
@@ -266,13 +266,13 @@ async def test_create_allows_a_new_target_on_an_active_cluster() -> None:
         target.name,
         target.backend_type,
         target.endpoint,
-        target.api_key,
+        target.credential_ref,
         is_default=False,
         created_by=uuid.uuid4(),
         placement=target.placement,
     )
 
-    assert result.api_key == ""
+    assert result.credential_ref == target.credential_ref
     assert session.added is not None
     await store.close()
 
@@ -294,7 +294,7 @@ async def test_create_rejects_a_missing_cluster() -> None:
             target.name,
             target.backend_type,
             target.endpoint,
-            target.api_key,
+            target.credential_ref,
             is_default=False,
             created_by=uuid.uuid4(),
             placement=target.placement,
@@ -316,7 +316,7 @@ async def test_create_rejects_an_enabled_cluster_in_another_state() -> None:
             target.name,
             target.backend_type,
             target.endpoint,
-            target.api_key,
+            target.credential_ref,
             is_default=False,
             created_by=uuid.uuid4(),
             placement=target.placement,
@@ -336,7 +336,7 @@ async def test_concurrent_default_creation_is_translated_to_a_domain_error() -> 
             target.name,
             target.backend_type,
             target.endpoint,
-            target.api_key,
+            target.credential_ref,
             is_default=True,
             created_by=uuid.uuid4(),
             placement=target.placement,
@@ -356,7 +356,7 @@ async def test_non_default_integrity_errors_are_preserved() -> None:
             target.name,
             target.backend_type,
             target.endpoint,
-            target.api_key,
+            target.credential_ref,
             is_default=False,
             created_by=uuid.uuid4(),
             placement=target.placement,
@@ -378,19 +378,20 @@ async def test_activate_rejects_a_target_that_is_already_draining() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_can_replace_api_key_and_rejects_missing_target() -> None:
+async def test_update_can_replace_credential_ref_and_rejects_missing_target() -> None:
     target = _target()
     store = _store(_Session(result=_Result(target)))
+    credential_ref = uuid.uuid4()
 
     result = await store.update(
         target.id,
         updated_by=uuid.uuid4(),
-        api_key="new-secret",
+        credential_ref=credential_ref,
         placement=target.placement,
     )
 
-    assert result.api_key == ""
-    assert target.api_key == "new-secret"
+    assert result.credential_ref == credential_ref
+    assert target.credential_ref == credential_ref
 
     missing_session = _Session()
     missing_store = _store(missing_session)
@@ -515,7 +516,7 @@ async def test_record_health_transitions_active_and_degraded() -> None:
     assert degraded.status is TargetStatus.DEGRADED
     assert degraded.status_message == "Namespace ao-execution does not exist"
     assert degraded.enabled is True
-    assert degraded.api_key == ""
+    assert degraded.credential_ref == target.credential_ref
     assert target.updated_by == actor
 
     recovered = await store.record_health(target.id, healthy=True, message="ignored", updated_by=actor)

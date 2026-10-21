@@ -8,14 +8,13 @@ from typing import TYPE_CHECKING, ClassVar
 from sqlalchemy import Column, Index, UniqueConstraint, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.types import DateTime
+from sqlalchemy.types import DateTime, Uuid
 from sqlmodel import Field, Relationship, SQLModel
 
 if TYPE_CHECKING:
     from execution_plane.models.cluster import Cluster
 
 from execution_plane.models.constants import EP_SCHEMA
-from execution_plane.models.credential import EncryptedCredential
 from execution_plane.models.execution_target_placement import ExecutionTargetPlacement, ExecutionTargetPlacementTypes
 from execution_plane.models.sqlmodel_types import DiscriminatedJSONB
 
@@ -110,7 +109,7 @@ class ExecutionTarget(SQLModel, table=True):
     )
     enabled: bool = True
     is_default: bool = Field(default=False, nullable=False)
-    api_key: str = Field(sa_column=Column(EncryptedCredential(), nullable=False), repr=False, exclude=True)
+    credential_ref: uuid.UUID = Field(sa_column=Column(Uuid(), nullable=False))
     status_message: str | None = Field(default=None, nullable=True)
     labels: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False, server_default="{}"))
     created_by: uuid.UUID = Field(nullable=False)

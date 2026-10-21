@@ -47,7 +47,6 @@ from execution_plane_client.protocol import Command, CommandScope, MessageEnvelo
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CLUSTER_NAME = "ep-kind"
 DEFAULT_NAMESPACE = "execution-plane"
-DISPATCHER_SA = "syntara-dispatcher"
 DEFAULT_BINDING_NAME = "kind-local"
 DEFAULT_API_URL = "https://127.0.0.1:8001"
 DEFAULT_WAIT_SECONDS = 90
@@ -131,54 +130,6 @@ def apply_workload_rbac(kubeconfig: Path, namespace: str) -> None:
     if namespace != DEFAULT_NAMESPACE:
         manifest = manifest.replace(DEFAULT_NAMESPACE, namespace)
     kubectl(kubeconfig, "apply", "-f", "-", input_text=manifest)
-
-
-def service_account_token(kubeconfig: Path, namespace: str) -> str:
-    """Mint a long-lived token the EP worker can send as a Bearer credential."""
-    result = kubectl(
-        kubeconfig,
-        "create",
-        "token",
-        DISPATCHER_SA,
-        "--namespace",
-        namespace,
-        "--duration",
-        "8760h",
-        check=False,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        return result.stdout.strip()
-    print("[INFO] kubectl create token failed; falling back to a bound service-account secret")
-    secret_name = f"{DISPATCHER_SA}-token"
-    secret_manifest = f"""
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {secret_name}
-  namespace: {namespace}
-  annotations:
-    kubernetes.io/service-account.name: {DISPATCHER_SA}
-type: kubernetes.io/service-account-token
-"""
-    kubectl(kubeconfig, "apply", "-f", "-", input_text=secret_manifest)
-    for _ in range(30):
-        secret = kubectl(
-            kubeconfig,
-            "get",
-            "secret",
-            secret_name,
-            "--namespace",
-            namespace,
-            "-o",
-            "json",
-        )
-        data = json.loads(secret.stdout).get("data") or {}
-        encoded = data.get("token")
-        if encoded:
-            return base64.b64decode(encoded).decode("ascii")
-        time.sleep(1)
-    msg = "Timed out waiting for a service-account token Secret"
-    raise TimeoutError(msg)
 
 
 def cluster_ca_pem(kubeconfig: Path) -> str:
@@ -308,7 +259,7 @@ def upsert_binding(
     name: str,
     endpoint: str,
     namespace: str,
-    credential: str,
+    credential_ref: uuid.UUID,
     ca_certificate: str,
 ) -> dict[str, Any]:
     """Submit versioned desired state for the kind cluster."""
@@ -319,7 +270,7 @@ def upsert_binding(
         "name": name,
         "endpoint": endpoint,
         "namespace": namespace,
-        "credential": credential,
+        "credential_ref": str(credential_ref),
         "ca_certificate": ca_certificate,
         "enabled": True,
         "labels": {"execution-plane.syntara.io/local": "kind"},
@@ -397,7 +348,7 @@ def register_kind_binding(
     binding_name: str,
     endpoint: str,
     namespace: str,
-    credential: str,
+    credential_ref: uuid.UUID,
     ca_certificate: str,
     wait_seconds: int,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -412,7 +363,7 @@ def register_kind_binding(
         name=binding_name,
         endpoint=endpoint,
         namespace=namespace,
-        credential=credential,
+        credential_ref=credential_ref,
         ca_certificate=ca_certificate,
     )
     binding = wait_for_binding(api_url, token, integration_id, wait_seconds)
@@ -434,9 +385,18 @@ def main() -> int:
     )
     parser.add_argument("--binding-name", default=DEFAULT_BINDING_NAME)
     parser.add_argument("--api-url", default=os.environ.get("EP_API_URL", DEFAULT_API_URL))
+    parser.add_argument(
+        "--credential-ref",
+        type=uuid.UUID,
+        default=uuid.UUID(os.environ["EP_KIND_CREDENTIAL_REF"]) if os.environ.get("EP_KIND_CREDENTIAL_REF") else None,
+        help="AO UUID for the credential that grants access to this kind cluster",
+    )
     parser.add_argument("--wait-seconds", type=int, default=DEFAULT_WAIT_SECONDS)
     parser.add_argument("--recreate", action="store_true", help="Delete and recreate the kind cluster")
     args = parser.parse_args()
+    if args.credential_ref is None:
+        msg = "--credential-ref or EP_KIND_CREDENTIAL_REF is required"
+        raise RuntimeError(msg)
 
     kubeconfig: Path | None = None
     try:
@@ -447,7 +407,6 @@ def main() -> int:
             kubeconfig = Path(handle.name)
         export_kubeconfig(args.cluster_name, kubeconfig)
         apply_workload_rbac(kubeconfig, args.namespace)
-        credential = service_account_token(kubeconfig, args.namespace)
         ca_certificate = cluster_ca_pem(kubeconfig)
         endpoint = f"https://{node_internal_ip(kubeconfig)}:{CONTROL_PLANE_PORT}"
         connect_worker_to_kind_network()
@@ -458,7 +417,7 @@ def main() -> int:
             binding_name=args.binding_name,
             endpoint=endpoint,
             namespace=args.namespace,
-            credential=credential,
+            credential_ref=args.credential_ref,
             ca_certificate=ca_certificate,
             wait_seconds=args.wait_seconds,
         )

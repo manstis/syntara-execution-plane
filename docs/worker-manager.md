@@ -11,8 +11,9 @@ class WorkerManager(Protocol):
 
 The worker process registers managers by `ExecutionTarget.backend_type`. The
 first implementation is `VanillaK8sWorkerManager`; it reads the target's
-namespace, selectors, and tolerations plus the cluster's verified endpoint,
-CA, and credential. It builds no AO or Temporal dependency into EP.
+namespace, selectors, and tolerations plus the cluster's verified endpoint and
+CA, and resolves the cluster's `credential_ref` just in time. It builds no AO or
+Temporal dependency into EP.
 
 ## Cold-start implementation
 
@@ -35,8 +36,9 @@ finishes, or cannot be cleaned up. Claims carry a database owner and generation;
 long-running dispatch refreshes the lease, and every mutation checks the same
 fence. A stale controller cannot update a newer attempt.
 
-Known pre-Execute failures can be requeued after backoff. A gRPC failure after
-Execute might have been submitted is recorded as `reconciliation_required`,
+Known pre-Execute failures, including credential-resolution failures, can be
+requeued after backoff. A gRPC failure after Execute might have been submitted is
+recorded as `reconciliation_required`,
 not automatically rerun. The current SDK runtime has no result replay query, so
 a missing terminal frame may require operator investigation. See
 [cold-start-node-dispatch.md](cold-start-node-dispatch.md) for the crash windows

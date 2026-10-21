@@ -34,7 +34,7 @@ def _target(*, is_default: bool = False, status: TargetStatus = TargetStatus.REG
         backend_type=BackendType.VANILLA_K8S,
         endpoint="https://target.example",
         placement=KubernetesPlacement(namespace="default"),
-        api_key="secret",
+        credential_ref=uuid.uuid4(),
         is_default=is_default,
         status=status,
         created_by=uuid.uuid4(),
@@ -50,7 +50,7 @@ def _cluster() -> Cluster:
         id=uuid.uuid4(),
         name="cluster-a",
         endpoint="https://cluster.example",
-        api_key="secret",
+        credential_ref=uuid.uuid4(),
         status=ClusterStatus.REGISTERING,
         enabled=True,
         created_by=uuid.uuid4(),
@@ -138,7 +138,7 @@ class _Store:
         name: str,
         backend_type: BackendType,
         endpoint: str,
-        api_key: str,
+        credential_ref: uuid.UUID,
         is_default: bool,  # noqa: FBT001
         created_by: uuid.UUID,
         placement: ExecutionTargetPlacement,
@@ -151,7 +151,7 @@ class _Store:
             "name": name,
             "backend_type": backend_type,
             "endpoint": endpoint,
-            "api_key": api_key,
+            "credential_ref": credential_ref,
             "is_default": is_default,
             "created_by": created_by,
             "placement": placement,
@@ -202,7 +202,7 @@ class _Store:
         placement: ExecutionTargetPlacement | None = None,
         labels: dict[str, str] | None = None,
         status_message: str | None = None,
-        api_key: str | None = None,
+        credential_ref: uuid.UUID | None = None,
     ) -> ExecutionTarget:
         self.updated = {
             "updated_by": updated_by,
@@ -211,7 +211,7 @@ class _Store:
             "placement": placement,
             "labels": labels,
             "status_message": status_message,
-            "api_key": api_key,
+            "credential_ref": credential_ref,
         }
         return self.target
 
@@ -239,13 +239,14 @@ async def test_store_creates_target_with_audit_fields_and_owns_the_commit() -> N
     store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
     cluster_id = uuid.uuid4()
     creator_id = uuid.uuid4()
+    credential_ref = uuid.uuid4()
 
     target = await store.create(
         cluster_id,
         "target-a",
         BackendType.VANILLA_K8S,
         "https://target.example",
-        "secret",
+        credential_ref,
         is_default=False,
         created_by=creator_id,
         labels={"region": "eu-west"},
@@ -258,9 +259,9 @@ async def test_store_creates_target_with_audit_fields_and_owns_the_commit() -> N
     assert target.labels == {"region": "eu-west", "_execution_target_id": str(target.id)}
     assert isinstance(target.placement, KubernetesPlacement)
     assert target.placement.namespace == "execution"
-    assert target.api_key == ""
-    assert session.added is not target
-    assert session.added.api_key == "secret"  # type: ignore[union-attr]
+    assert target.credential_ref == credential_ref
+    assert session.added is target
+    assert session.added.credential_ref == credential_ref  # type: ignore[union-attr]
     assert session.commits == 1
     await store.close()
 
@@ -281,7 +282,7 @@ async def test_target_store_creates_target_with_identity_label_and_cleanses_user
         target.name,
         target.backend_type,
         target.endpoint,
-        target.api_key,
+        target.credential_ref,
         is_default=False,
         created_by=uuid.uuid4(),
         placement=target.placement,
@@ -307,7 +308,7 @@ async def test_store_rejects_a_second_default_target_for_a_cluster() -> None:
             "target-b",
             BackendType.VANILLA_K8S,
             "https://target-b.example",
-            "secret",
+            uuid.uuid4(),
             is_default=True,
             created_by=uuid.uuid4(),
             placement=placement,
@@ -332,7 +333,7 @@ async def test_store_rolls_back_when_target_creation_cannot_commit() -> None:
             "target-a",
             BackendType.VANILLA_K8S,
             "https://target.example",
-            "secret",
+            uuid.uuid4(),
             is_default=False,
             created_by=uuid.uuid4(),
             placement=placement,
@@ -388,7 +389,7 @@ async def test_store_updates_target_metadata_and_audit_fields_without_exposing_s
     assert result.status_message == "updated"
     assert result.cluster_id == original_cluster_id
     assert result.is_default is True
-    assert result.api_key == ""
+    assert result.credential_ref == target.credential_ref
     assert result.updated_by == actor_id
     assert session.commits == 1
     await store.close()
@@ -469,7 +470,7 @@ async def test_target_store_supports_registration_transitions() -> None:
             target.name,
             target.backend_type,
             target.endpoint,
-            target.api_key,
+            target.credential_ref,
             target.is_default,
             target.created_by,
             placement=KubernetesPlacement(namespace="execution"),

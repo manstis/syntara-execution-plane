@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import ClassVar
 
-from sqlalchemy import Column, DateTime, Index, Integer, String
+from sqlalchemy import Column, DateTime, Index, Integer, String, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -53,7 +53,7 @@ class ClusterBinding(SQLModel, table=True):
     name: str = Field(sa_column=Column(String(255), nullable=False))
     endpoint: str = Field(sa_column=Column(String(2048), nullable=False))
     namespace: str = Field(sa_column=Column(String(63), nullable=False))
-    credential: str = Field(sa_column=Column(EncryptedCredential(), nullable=False), repr=False)
+    credential_ref: uuid.UUID = Field(sa_column=Column(Uuid(), nullable=False))
     ca_certificate: str | None = Field(
         default=None,
         sa_column=Column(EncryptedCredential(), nullable=True),

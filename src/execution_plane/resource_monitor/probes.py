@@ -39,14 +39,14 @@ class ProbeResult:
 class TargetProbe(Protocol):
     """Probe one Cluster / ExecutionTarget pair. RHEL later adds another implementation."""
 
-    async def probe(self, cluster: Cluster, target: ExecutionTarget) -> ProbeResult:
+    async def probe(self, cluster: Cluster, credential: str, target: ExecutionTarget) -> ProbeResult:
         """Return health for this target, or a skipped result that leaves status unchanged."""
 
 
 class SkipProbe:
     """Leave persisted status unchanged (RHEL, local://, non-health lifecycle)."""
 
-    async def probe(self, cluster: Cluster, target: ExecutionTarget) -> ProbeResult:
+    async def probe(self, cluster: Cluster, _credential: str, target: ExecutionTarget) -> ProbeResult:
         """Return a skipped result so the monitor does not write health."""
         del cluster, target
         return ProbeResult(healthy=True, skipped=True)
@@ -59,23 +59,23 @@ class KubernetesNamespaceProbe:
         self,
         *,
         timeout_seconds: float,
-        reader: Callable[[Cluster, str], None] | None = None,
+        reader: Callable[[Cluster, str, str], None] | None = None,
     ) -> None:
         """Use ``reader`` in tests; production talks to Kubernetes through the shared factory."""
         self._timeout_seconds = timeout_seconds
         self._reader = reader or self._read_namespace
 
-    def _read_namespace(self, cluster: Cluster, namespace: str) -> None:
-        read_namespace(cluster, namespace, timeout_seconds=self._timeout_seconds)
+    def _read_namespace(self, cluster: Cluster, credential: str, namespace: str) -> None:
+        read_namespace(cluster, credential, namespace, timeout_seconds=self._timeout_seconds)
 
-    async def probe(self, cluster: Cluster, target: ExecutionTarget) -> ProbeResult:
+    async def probe(self, cluster: Cluster, credential: str, target: ExecutionTarget) -> ProbeResult:
         """Map namespace GET outcomes onto healthy / unhealthy without logging credentials."""
         if not isinstance(target.placement, KubernetesPlacement):
             return ProbeResult(healthy=True, skipped=True)
         namespace = target.placement.namespace
         try:
             await asyncio.wait_for(
-                asyncio.to_thread(self._reader, cluster, namespace),
+                asyncio.to_thread(self._reader, cluster, credential, namespace),
                 timeout=self._timeout_seconds,
             )
         except TimeoutError:
@@ -115,11 +115,11 @@ class DispatchingTargetProbe:
         self._kubernetes = kubernetes_probe or KubernetesNamespaceProbe(timeout_seconds=timeout_seconds)
         self._skip = skip_probe or SkipProbe()
 
-    async def probe(self, cluster: Cluster, target: ExecutionTarget) -> ProbeResult:
+    async def probe(self, cluster: Cluster, credential: str, target: ExecutionTarget) -> ProbeResult:
         """Skip RHEL, local://, and non-health lifecycle; otherwise probe the namespace."""
         if should_skip_probe(cluster, target):
-            return await self._skip.probe(cluster, target)
-        return await self._kubernetes.probe(cluster, target)
+            return await self._skip.probe(cluster, credential, target)
+        return await self._kubernetes.probe(cluster, credential, target)
 
 
 def should_skip_probe(cluster: Cluster, target: ExecutionTarget) -> bool:
@@ -129,8 +129,6 @@ def should_skip_probe(cluster: Cluster, target: ExecutionTarget) -> bool:
     if not cluster.enabled or cluster.status is not ClusterStatus.ACTIVE:
         return True
     if not cluster.endpoint.startswith(("http://", "https://")):
-        return True
-    if not cluster.api_key:
         return True
     if not target.enabled or target.status not in _PROBEABLE_STATUSES:
         return True

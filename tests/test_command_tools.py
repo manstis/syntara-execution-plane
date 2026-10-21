@@ -87,7 +87,7 @@ def test_cluster_tool_submits_binding_command_and_queries_resource(monkeypatch):
         name="workers",
         endpoint="https://cluster.test",
         namespace="ep",
-        credential="secret",
+        credential_ref=uuid4(),
         ca_certificate=None,
     )
     assert requests[0][:2] == ("GET", f"https://ep.test/v1/clusters/{integration_id}")

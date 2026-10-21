@@ -1110,10 +1110,10 @@ components:
           minLength: 1
           pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
           title: Namespace
-        credential:
+        credential_ref:
           type: string
-          title: Credential
-          default: ''
+          format: uuid
+          title: Credential Ref
         ca_certificate:
           anyOf:
           - type: string
@@ -1149,6 +1149,7 @@ components:
       - name
       - endpoint
       - namespace
+      - credential_ref
       title: ClusterProvision
       description: Provision through the same binding and default-target reconciler.
     ClusterRegister:
@@ -1176,10 +1177,10 @@ components:
           minLength: 1
           pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
           title: Namespace
-        credential:
+        credential_ref:
           type: string
-          title: Credential
-          default: ''
+          format: uuid
+          title: Credential Ref
         ca_certificate:
           anyOf:
           - type: string
@@ -1215,6 +1216,7 @@ components:
       - name
       - endpoint
       - namespace
+      - credential_ref
       title: ClusterRegister
       description: Create or replace the complete desired configuration of a binding.
     ClusterUpdate:
@@ -1242,11 +1244,12 @@ components:
           - type: string
           - type: 'null'
           title: Namespace
-        credential:
+        credential_ref:
           anyOf:
           - type: string
+            format: uuid
           - type: 'null'
-          title: Credential
+          title: Credential Ref
         ca_certificate:
           anyOf:
           - type: string
@@ -1532,10 +1535,10 @@ components:
           maxLength: 2048
           minLength: 1
           title: Endpoint
-        credential:
+        credential_ref:
           type: string
-          title: Credential
-          default: ''
+          format: uuid
+          title: Credential Ref
         labels:
           additionalProperties:
             type: string
@@ -1557,6 +1560,7 @@ components:
       - backend_type
       - placement
       - endpoint
+      - credential_ref
       - cluster_id
       title: TargetRegister
       description: Register an independently identified target on an existing cluster.
@@ -1592,11 +1596,12 @@ components:
                 rhel: '#/components/schemas/ClientRHELPlacement'
           - type: 'null'
           title: Placement
-        credential:
+        credential_ref:
           anyOf:
           - type: string
+            format: uuid
           - type: 'null'
-          title: Credential
+          title: Credential Ref
         labels:
           anyOf:
           - additionalProperties:

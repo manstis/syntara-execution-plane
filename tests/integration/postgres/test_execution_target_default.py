@@ -28,7 +28,7 @@ async def test_concurrent_default_promotions_leave_exactly_one_default(migrated_
             cluster = await cluster_store.create(
                 f"cluster-{uuid4()}",
                 f"https://{uuid4()}.example",
-                "cluster-secret",
+                uuid4(),
                 actor_id,
             )
             cluster = await cluster_store.record_discovery_state(
@@ -46,7 +46,7 @@ async def test_concurrent_default_promotions_leave_exactly_one_default(migrated_
                     name=name,
                     backend_type=BackendType.VANILLA_K8S,
                     endpoint=f"https://{name}.example",
-                    api_key="target-secret",
+                    credential_ref=uuid4(),
                     is_default=False,
                     created_by=actor_id,
                     placement=KubernetesPlacement(namespace="execution"),

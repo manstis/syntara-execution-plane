@@ -112,7 +112,7 @@ class ClusterBindingReconciler:
                 current.is_default = binding.is_default
             current.updated_at = datetime.now(UTC)
             if status == "deleted":
-                current.credential = ""
+                current.credential_ref = uuid.UUID(int=0)
                 current.ca_certificate = None
             await session.commit()
 
@@ -126,7 +126,7 @@ class ClusterBindingReconciler:
             created = await self._registrar.provision(
                 binding.name,
                 binding.endpoint,
-                binding.credential,
+                binding.credential_ref,
                 KubernetesPlacement(namespace=binding.namespace),
                 SYSTEM_ACTOR_ID,
                 binding.labels,
@@ -152,7 +152,7 @@ class ClusterBindingReconciler:
             current = await self._registrar.provision(
                 binding.name,
                 binding.endpoint,
-                binding.credential,
+                binding.credential_ref,
                 KubernetesPlacement(namespace=binding.namespace),
                 SYSTEM_ACTOR_ID,
                 binding.labels,
@@ -167,7 +167,7 @@ class ClusterBindingReconciler:
             updated_by=SYSTEM_ACTOR_ID,
             name=binding.name,
             endpoint=binding.endpoint,
-            api_key=binding.credential,
+            credential_ref=binding.credential_ref,
             labels=binding.labels,
             is_default=binding.is_default,
         )

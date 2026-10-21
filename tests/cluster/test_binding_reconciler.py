@@ -23,7 +23,7 @@ def _binding() -> ClusterBinding:
         name="workers",
         endpoint="https://cluster.example",
         namespace="ep-workers",
-        credential="secret",
+        credential_ref=uuid.uuid4(),
         created_at=now,
         updated_at=now,
     )
@@ -35,7 +35,7 @@ def _cluster() -> Cluster:
         id=uuid.uuid4(),
         name="workers",
         endpoint="https://cluster.example",
-        api_key="secret",
+        credential_ref=uuid.uuid4(),
         status=ClusterStatus.ACTIVE,
         created_by=uuid.uuid4(),
         created_at=now,

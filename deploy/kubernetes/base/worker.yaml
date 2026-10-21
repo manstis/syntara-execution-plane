@@ -35,6 +35,11 @@ spec:
                 configMapKeyRef:
                   name: execution-plane-config
                   key: ao-completion-callback-url
+            - name: EP_CREDENTIAL_RESOLUTION_CALLBACK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: execution-plane-config
+                  key: ao-credential-resolution-callback-url
             - name: EP_CALLBACK_CA_CERT_PATH
               value: /run/secrets/ao/ca.pem
             - name: EP_CALLBACK_CERT_PATH

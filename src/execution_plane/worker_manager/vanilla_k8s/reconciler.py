@@ -14,6 +14,7 @@ import structlog
 from kubernetes import client
 from kubernetes.client.exceptions import ApiException
 
+from execution_plane.credential_resolution.resolver import CredentialResolutionError, CredentialResolver
 from execution_plane.models.execution_target import BackendType
 from execution_plane.models.execution_target_placement import KubernetesPlacement
 from execution_plane.store_errors import StaleClaimError
@@ -30,14 +31,18 @@ _ORPHAN_GRACE = timedelta(minutes=10)
 _RECONCILE_INTERVAL_SECONDS = 60
 
 
-def _target_config(target: ExecutionTarget, cluster: Cluster) -> tuple[dict[str, str], str] | None:
+def _target_config(
+    target: ExecutionTarget,
+    cluster: Cluster,
+    credential: str,
+) -> tuple[dict[str, str], str] | None:
     """Return the verified Kubernetes endpoint and namespace for this target."""
     if target.backend_type is not BackendType.VANILLA_K8S or not isinstance(target.placement, KubernetesPlacement):
         return None
     return (
         {
             "base_url": cluster.endpoint,
-            "token": cluster.api_key,
+            "token": credential,
             "ca_certificate": cluster.ca_certificate or "",
         },
         target.placement.namespace,
@@ -120,6 +125,7 @@ async def run_orphan_policy_reconciler(  # noqa: C901 - isolate cleanup failures
     target_cleanup: ExecutionTargetStore,
     cluster_credentials: ClusterStore,
     work_progress: WorkStore,
+    credential_resolver: CredentialResolver,
 ) -> None:
     """Periodically clean up aged policies left by a worker crash or API outage."""
     while True:
@@ -132,7 +138,17 @@ async def run_orphan_policy_reconciler(  # noqa: C901 - isolate cleanup failures
                 cluster = await cluster_credentials.get_with_credentials(target.cluster_id)
                 if cluster is None:
                     continue
-                connection = _target_config(target, cluster)
+                if cluster.source_client_id is None:
+                    continue
+                try:
+                    credential = await credential_resolver.resolve(
+                        cluster.credential_ref,
+                        client_id=cluster.source_client_id,
+                    )
+                except CredentialResolutionError:
+                    logger.warning("Could not resolve cluster credential for policy reconciliation")
+                    continue
+                connection = _target_config(target, cluster, credential)
                 if connection is None:
                     continue
                 config_values, namespace = connection

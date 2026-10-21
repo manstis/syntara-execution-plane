@@ -82,10 +82,10 @@ The outbound `work.execute.completed` command is documented separately under
 | --- | --- |
 | `work.execute` | `WorkExecute`: image, versioned invocation, optional output configuration; enqueue existing work lifecycle |
 | `command.cancel` | `target_command_id`: existing work UUID; request cancellation through `WorkStore` |
-| `cluster.register`, `cluster.provision` | `ClusterRegister`: `resource_key`, `desired_revision`, name, endpoint, namespace, credential, optional CA/project grants/labels/enabled/`is_default`; create or replace binding desired state |
+| `cluster.register`, `cluster.provision` | `ClusterRegister`: `resource_key`, `desired_revision`, name, endpoint, namespace, `credential_ref`, optional CA/project grants/labels/enabled/`is_default`; create or replace binding desired state |
 | `cluster.update` | `resource_key`, `desired_revision`, explicitly changed binding fields, and optional `is_default`; `true` atomically promotes the Cluster as the global default |
 | `cluster.delete` | `resource_key`, `desired_revision`; disable an existing binding for reconciliation |
-| `execution_target.register` | `resource_id`, owned physical `cluster_id`, name, backend, placement, endpoint, credential, labels and optional `is_default`; create an independent target and optionally promote it as the Cluster default |
+| `execution_target.register` | `resource_id`, owned physical `cluster_id`, name, backend, placement, endpoint, `credential_ref`, labels and optional `is_default`; create an independent target and optionally promote it as the Cluster default |
 | `execution_target.update` | `resource_id`, mutable target fields and optional `is_default`; `true` atomically promotes the target and demotes the previous default |
 | `execution_target.delete` | `resource_id`; request draining of a non-default target |
 
@@ -102,7 +102,7 @@ reconciler promotes the first Cluster that becomes eligible.
 
 Targets use existing resource identities and lifecycle operations, without an
 additional revision journal. A Cluster binding seeds its initial default target,
-but later Cluster updates do not rewrite target-owned endpoint, credential,
+but later Cluster updates do not rewrite target-owned endpoint, credential reference,
 placement or label configuration. Target commands may update the current
 default's metadata and may promote another target as the default. The current
 default cannot be explicitly demoted or deleted; promote a replacement first.
@@ -128,11 +128,23 @@ and observed revisions, status and the separate physical `cluster_id`, including
 before setup succeeds and after deletion. Use that physical ID to register an
 independent execution target. Target IDs are physical target UUIDs.
 
-Queries exclude management credentials, CA material and work invocation data.
+Queries exclude management credential references, CA material and work invocation data.
 Work lists omit result bodies; individual reads return the full stored result,
 with `result_size_bytes` indicating its size. This supports recovery if a callback
 was missed, without needing command history. Health probes remain at
 `/healthz/live` and `/healthz/ready`.
+
+## Credential resolution is a command
+
+EP stores only the AO-owned `credential_ref` UUID. When the worker must contact a
+cluster, it constructs a `CredentialResolve` command for that reference, routes it
+with the Cluster's source client identity, and posts it to
+`EP_CREDENTIAL_RESOLUTION_CALLBACK_URL`. AO returns a correlated
+`CredentialResolution`; its credential value is bounded, excluded from `repr`, held
+only in memory for the current operation, and never persisted or logged by EP. The
+resolution callback has its own URL setting while reusing the callback CA, client
+certificate/key and timeout settings. Resolution failures before Execute are mapped
+to retryable dispatch failures rather than unknown workload outcomes.
 
 ## Work completion is a command
 

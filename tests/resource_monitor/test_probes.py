@@ -24,9 +24,9 @@ _TOKEN_BODY = "super-secret-token"  # noqa: S105
 async def test_namespace_probe_success() -> None:
     cluster = make_cluster()
     target = make_target(cluster)
-    probe = KubernetesNamespaceProbe(timeout_seconds=1, reader=lambda _cluster, _namespace: None)
+    probe = KubernetesNamespaceProbe(timeout_seconds=1, reader=lambda _cluster, _credential, _namespace: None)
 
-    result = await probe.probe(cluster, target)
+    result = await probe.probe(cluster, "resolved-token", target)
 
     assert result.healthy is True
     assert result.skipped is False
@@ -39,10 +39,10 @@ async def test_namespace_probe_maps_http_outcomes_without_bodies() -> None:
     target = make_target(cluster, namespace="missing-ns")
 
     async def probe_status(status: int, reason: str) -> object:
-        def reader(_cluster: object, _namespace: str) -> None:
+        def reader(_cluster: object, _credential: str, _namespace: str) -> None:
             raise ApiException(status=status, reason=reason)
 
-        return await KubernetesNamespaceProbe(timeout_seconds=1, reader=reader).probe(cluster, target)
+        return await KubernetesNamespaceProbe(timeout_seconds=1, reader=reader).probe(cluster, "resolved-token", target)
 
     not_found = await probe_status(HTTPStatus.NOT_FOUND, f"Bearer {_TOKEN_BODY}")
     forbidden = await probe_status(HTTPStatus.FORBIDDEN, f"Bearer {_TOKEN_BODY}")
@@ -63,15 +63,17 @@ async def test_namespace_probe_timeout_and_unreachable() -> None:
     cluster = make_cluster()
     target = make_target(cluster)
 
-    def hang(_cluster: object, _namespace: str) -> None:
+    def hang(_cluster: object, _credential: str, _namespace: str) -> None:
         raise TimeoutError
 
-    def boom(_cluster: object, _namespace: str) -> None:
+    def boom(_cluster: object, _credential: str, _namespace: str) -> None:
         leaked = f"connection to https://cluster.example with token {_TOKEN_BODY}"
         raise ConnectionError(leaked)
 
-    timed_out = await KubernetesNamespaceProbe(timeout_seconds=1, reader=hang).probe(cluster, target)
-    unreachable = await KubernetesNamespaceProbe(timeout_seconds=1, reader=boom).probe(cluster, target)
+    timed_out = await KubernetesNamespaceProbe(timeout_seconds=1, reader=hang).probe(cluster, "resolved-token", target)
+    unreachable = await KubernetesNamespaceProbe(timeout_seconds=1, reader=boom).probe(
+        cluster, "resolved-token", target
+    )
 
     assert timed_out.message == "Kubernetes API timed out"
     assert unreachable.message == "Kubernetes API is unreachable"
@@ -82,7 +84,7 @@ async def test_namespace_probe_timeout_and_unreachable() -> None:
 async def test_skip_probe_does_not_update() -> None:
     cluster = make_cluster()
     target = make_target(cluster)
-    result = await SkipProbe().probe(cluster, target)
+    result = await SkipProbe().probe(cluster, "resolved-token", target)
     assert result.skipped is True
 
 
@@ -91,7 +93,7 @@ async def test_dispatching_probe_skips_local_and_rhel() -> None:
     calls: list[str] = []
 
     class RecordingK8s:
-        async def probe(self, cluster: object, target: object) -> object:
+        async def probe(self, cluster: object, _credential: str, target: object) -> object:
             del cluster, target
             calls.append("k8s")
             pytest.fail("Kubernetes probe must not run for skipped targets")
@@ -102,8 +104,8 @@ async def test_dispatching_probe_skips_local_and_rhel() -> None:
     local_target = make_target(local)
     rhel_target = make_target(rhel)
 
-    assert (await probe.probe(local, local_target)).skipped is True
-    assert (await probe.probe(rhel, rhel_target)).skipped is True
+    assert (await probe.probe(local, "resolved-token", local_target)).skipped is True
+    assert (await probe.probe(rhel, "resolved-token", rhel_target)).skipped is True
     assert calls == []
 
 
@@ -116,6 +118,5 @@ def test_should_skip_probe_covers_lifecycle_and_disabled() -> None:
     assert should_skip_probe(cluster, make_target(cluster, rhel=True)) is True
     assert should_skip_probe(make_cluster(enabled=False), make_target(cluster)) is True
     assert should_skip_probe(make_cluster(status=ClusterStatus.DRAINING), make_target(cluster)) is True
-    assert should_skip_probe(make_cluster(api_key=""), make_target(cluster)) is True
     assert should_skip_probe(cluster, make_target(cluster, status=TargetStatus.ACTIVE)) is False
     assert should_skip_probe(cluster, make_target(cluster, status=TargetStatus.DEGRADED)) is False

@@ -52,7 +52,7 @@ async def test_cluster_commands_only_change_binding_desired_state(command_client
         "name": "test",
         "endpoint": "https://cluster.test",
         "namespace": "ep",
-        "credential": "private-secret",
+        "credential_ref": str(uuid4()),
         "is_default": True,
     }
     created = await client.post("/v1/commands", json=command_message("cluster.register", payload))
@@ -162,7 +162,7 @@ async def test_concurrent_binding_creates_cannot_overwrite_same_revision(command
         "name": "first",
         "endpoint": "https://cluster.test",
         "namespace": "ep",
-        "credential": "secret",
+        "credential_ref": str(uuid4()),
     }
     responses = await asyncio.gather(
         *(
@@ -182,7 +182,7 @@ async def test_cluster_update_preserves_omitted_fields_and_rejects_null_required
         "name": "test",
         "endpoint": "https://cluster.test",
         "namespace": "ep",
-        "credential": "secret",
+        "credential_ref": str(uuid4()),
         "project_ids": [str(uuid4())],
     }
     assert (await client.post("/v1/commands", json=command_message("cluster.register", payload))).status_code == 202
@@ -190,7 +190,7 @@ async def test_cluster_update_preserves_omitted_fields_and_rejects_null_required
     assert (await client.post("/v1/commands", json=command_message("cluster.update", patch))).status_code == 202
     async with sessions() as session:
         row = await session.get(ClusterBinding, ("ao", key))
-        assert row.credential == "secret"
+        assert row.credential_ref == UUID(payload["credential_ref"])
         assert row.namespace == "ep"
         assert row.project_ids is None
     invalid = await client.post(
@@ -211,7 +211,7 @@ async def test_cluster_commands_cleanse_internal_labels(command_client):
         "name": "test",
         "endpoint": "https://cluster.test",
         "namespace": "ep",
-        "credential": "secret",
+        "credential_ref": str(uuid4()),
         "labels": {"team": "platform", "_cluster_id": "spoofed", "_internal": "spoofed"},
     }
     assert (await client.post("/v1/commands", json=command_message("cluster.register", payload))).status_code == 202
@@ -242,7 +242,7 @@ async def test_target_commands_add_and_preserve_the_target_identity_label(comman
                 id=cluster_id,
                 name=str(cluster_id),
                 endpoint="https://cluster.test",
-                api_key="secret",
+                credential_ref=uuid4(),
                 source_client_id="ao",
                 status=ClusterStatus.ACTIVE,
                 created_by=uuid4(),
@@ -257,7 +257,7 @@ async def test_target_commands_add_and_preserve_the_target_identity_label(comman
         "name": "workers",
         "backend_type": "vanilla_k8s",
         "endpoint": "https://cluster.test",
-        "credential": "secret",
+        "credential_ref": str(uuid4()),
         "placement": {"type": "kubernetes", "namespace": "ep"},
         "labels": {"region": "eu-west", "_execution_target_id": "spoofed", "_internal": "spoofed"},
     }
@@ -292,7 +292,7 @@ async def test_targets_enforce_cluster_ownership_defaults_and_domain_lifecycle(c
                     id=resource_id,
                     name=str(resource_id),
                     endpoint="https://cluster.test",
-                    api_key="secret",
+                    credential_ref=uuid4(),
                     source_client_id=owner,
                     status=ClusterStatus.ACTIVE,
                     created_by=uuid4(),
@@ -307,7 +307,7 @@ async def test_targets_enforce_cluster_ownership_defaults_and_domain_lifecycle(c
         "name": "workers",
         "backend_type": "vanilla_k8s",
         "endpoint": "https://cluster.test",
-        "credential": "secret",
+        "credential_ref": str(uuid4()),
         "placement": {"type": "kubernetes", "namespace": "ep", "node_selectors": ["env=test"]},
     }
     foreign = await client.post(
@@ -378,7 +378,7 @@ async def test_default_target_delete_is_rejected(command_client):
                 id=cluster_id,
                 name=str(cluster_id),
                 endpoint="https://cluster.test",
-                api_key="secret",
+                credential_ref=uuid4(),
                 source_client_id="ao",
                 status=ClusterStatus.ACTIVE,
                 created_by=uuid4(),
@@ -394,7 +394,7 @@ async def test_default_target_delete_is_rejected(command_client):
             name="default",
             backend_type=BackendType.VANILLA_K8S,
             endpoint="https://cluster.test",
-            api_key="secret",
+            credential_ref=uuid4(),
             is_default=True,
             created_by=uuid4(),
             placement=KubernetesPlacement(namespace="ep"),
@@ -420,7 +420,7 @@ async def test_failed_target_creation_rolls_back(command_client, monkeypatch):
                 id=cluster_id,
                 name=str(cluster_id),
                 endpoint="https://cluster.test",
-                api_key="secret",
+                credential_ref=uuid4(),
                 source_client_id="ao",
                 status=ClusterStatus.ACTIVE,
                 created_by=uuid4(),
@@ -441,7 +441,7 @@ async def test_failed_target_creation_rolls_back(command_client, monkeypatch):
         "name": "independent",
         "backend_type": "vanilla_k8s",
         "endpoint": "https://cluster.test",
-        "credential": "secret",
+        "credential_ref": str(uuid4()),
         "placement": {"type": "kubernetes", "namespace": "ep"},
     }
     with pytest.raises(RuntimeError, match="simulated activation failure"):
@@ -457,7 +457,7 @@ def _cluster_register_payload(key) -> dict[str, object]:
         "name": "test",
         "endpoint": "https://cluster.test",
         "namespace": "ep",
-        "credential": "private-secret",
+        "credential_ref": str(uuid4()),
     }
 
 
@@ -491,7 +491,7 @@ async def test_cluster_register_persists_the_full_shared_shape(command_client):
     assert row.name == "test"
     assert row.endpoint == "https://cluster.test"
     assert row.namespace == "ep"
-    assert row.credential == "private-secret"
+    assert row.credential_ref == UUID(payload["credential_ref"])
     assert row.ca_certificate is None
     assert row.project_ids == [project]
     assert row.labels == {"team": "platform"}
@@ -519,11 +519,11 @@ async def test_cluster_register_rejects_invalid_field_values(command_client, fie
 
 
 async def test_enabled_cluster_binding_requires_a_credential(command_client):
-    """The cross-field model validator rejects an enabled binding without a credential."""
+    """The cross-field model validator rejects an enabled binding without a credential reference."""
     client, sessions = command_client
     key = uuid4()
     payload = _cluster_register_payload(key)
-    del payload["credential"]  # enabled defaults to True
+    del payload["credential_ref"]  # enabled defaults to True
     response = await client.post("/v1/commands", json=command_message("cluster.register", payload))
     assert response.status_code == 422, response.text
     async with sessions() as session:

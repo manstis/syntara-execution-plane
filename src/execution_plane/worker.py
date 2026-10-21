@@ -14,6 +14,7 @@ from execution_plane.cluster.binding_reconciler import run_cluster_binding_recon
 from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.completion_notifier.notifier import CompletionNotifier
 from execution_plane.config import get_ep_settings, to_asyncpg_url
+from execution_plane.credential_resolution.resolver import CredentialResolver
 from execution_plane.database.ssl import ssl_connect_args_from_env
 from execution_plane.drain_monitor import DrainMonitor
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
@@ -231,13 +232,25 @@ async def run_worker(database_url: str) -> None:
         ExecutionTargetStore.from_database_url(database_url) as target_store,
     ):
         event_delivery = CompletionNotifier(settings)
+        credential_resolver = CredentialResolver(settings)
         worker_managers = WorkerManagerRegistry()
         placement_resolver = build_placement_resolver(cluster_store, target_store, worker_managers)
         work_scheduler = WorkScheduler(work_item_store, placement_resolver)
-        workload_manager = VanillaK8sWorkerManager(target_store, cluster_store, work_item_store, settings)
+        workload_manager = VanillaK8sWorkerManager(
+            target_store,
+            cluster_store,
+            work_item_store,
+            settings,
+            credential_resolver=credential_resolver,
+        )
         worker_managers.register(BackendType.VANILLA_K8S, workload_manager)
         drain_monitor = DrainMonitor(target_store, cluster_store, work_item_store)
-        resource_monitor = ResourceMonitor(target_store, cluster_store, settings)
+        resource_monitor = ResourceMonitor(
+            target_store,
+            cluster_store,
+            settings,
+            credential_resolver=credential_resolver,
+        )
         logger.debug(
             "ExecutionTarget reconciler constructed",
             resolver=type(placement_resolver).__name__,
@@ -265,13 +278,19 @@ async def run_worker(database_url: str) -> None:
                 tg.create_task(event_delivery.run(work_item_store), name="ep-completion-delivery")
                 tg.create_task(run_cluster_binding_reconciler(database_url), name="ep-cluster-bindings")
                 tg.create_task(
-                    run_orphan_policy_reconciler(target_store, cluster_store, work_item_store),
+                    run_orphan_policy_reconciler(
+                        target_store,
+                        cluster_store,
+                        work_item_store,
+                        credential_resolver,
+                    ),
                     name="ep-k8s-policy-reconciler",
                 )
         finally:
             await resource_monitor.stop()
             await drain_monitor.stop()
             await event_delivery.close()
+            await credential_resolver.close()
 
 
 async def _run() -> None:

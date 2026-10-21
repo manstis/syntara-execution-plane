@@ -80,3 +80,47 @@ def test_invocation_rejects_invalid_timeout(bad):
         NodeInvocation(
             inputs={}, credentials={}, workflow_context={}, settings={}, timeout_seconds=bad, max_output_bytes=1024
         )
+
+
+def test_cluster_commands_use_uuid_credential_refs():
+    from execution_plane_client.commands.clusters import ClusterRegister
+
+    credential_ref = uuid4()
+    command = ClusterRegister(
+        resource_key=uuid4(),
+        desired_revision=1,
+        name="workers",
+        endpoint="https://cluster.example",
+        namespace="execution",
+        credential_ref=credential_ref,
+    )
+
+    payload = command.model_dump(mode="json")
+
+    assert payload["credential_ref"] == str(credential_ref)
+    assert "credential" not in payload
+
+
+def test_credential_resolution_contract_hides_value_from_repr_and_correlates_by_message_id():
+    from execution_plane_client.catalog import CommandCatalog
+    from execution_plane_client.commands.credentials import CredentialResolution, CredentialResolve
+
+    credential_ref = uuid4()
+    message = CredentialResolve(credential_ref=credential_ref).to_message(
+        source_id="execution-plane",
+        destination_id="syntara-orchestration",
+        client_id="syntara-orchestration",
+    )
+
+    payload = CommandCatalog().validate(message)
+    resolution = CredentialResolution(message_id=message.message_id, credential="secret-token")
+
+    assert isinstance(payload, CredentialResolve)
+    assert payload.credential_ref == credential_ref
+    assert message.command.payload == {"credential_ref": str(credential_ref)}
+    assert resolution.message_id == message.message_id
+    assert "secret-token" not in repr(resolution)
+    with pytest.raises(ValidationError, match="credential"):
+        CredentialResolution(message_id=message.message_id, credential="")
+    with pytest.raises(ValidationError, match="credential"):
+        CredentialResolution(message_id=message.message_id, credential="x" * 65537)

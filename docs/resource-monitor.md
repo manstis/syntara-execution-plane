@@ -113,7 +113,7 @@ same `TargetProbe` protocol.
 
 For MVP, a target is healthy when:
 
-1. The Cluster API is reachable with the stored Cluster credentials.
+1. The Cluster API is reachable with the credential resolved from `credential_ref`.
 2. The ExecutionTarget namespace exists.
 3. The credential is still authorized for that namespace (HTTP 403 is
    unhealthy, not “out of capacity”).
@@ -122,7 +122,8 @@ It does **not** mean spare CPU, spare memory, or “this cluster can take N more
 jobs.”
 
 Probe: `GET /api/v1/namespaces/{target.namespace}` using the **Cluster**
-`endpoint` and `api_key`, not `ExecutionTarget.endpoint`. Target endpoints may
+`endpoint` and the credential resolved from `Cluster.credential_ref`, not
+`ExecutionTarget.endpoint`. Target endpoints may
 be `local://…` (bootstrap / in-process executor); the Cluster row is the
 control-plane connection.
 
@@ -133,7 +134,7 @@ control-plane connection.
 | 401 / 403 | Auth or RBAC failure | Count a failure; `status_message` explains authorization |
 | Timeout / connection error | API unreachable | Count a failure; `status_message` explains reachability |
 
-Do not log or persist the API key. `status_message` is operator-facing and
+Do not log or persist the resolved credential. `status_message` is operator-facing and
 must stay free of secrets.
 
 ### What to skip
@@ -176,7 +177,7 @@ Suggested layout:
 backend/execution-plane/src/execution_plane/resource_monitor/
   monitor.py      # loop, hysteresis, persist
   probes.py       # TargetProbe protocol, KubernetesNamespaceProbe, SkipProbe
-  client.py       # Kubernetes API client from Cluster.endpoint + api_key
+  client.py       # Kubernetes API client from Cluster.endpoint plus a resolved credential
 backend/execution-plane/tests/resource_monitor/
 ```
 
@@ -191,7 +192,7 @@ class ProbeResult:
     message: str | None  # never include credentials
 
 class TargetProbe(Protocol):
-    async def probe(self, cluster: Cluster, target: ExecutionTarget) -> ProbeResult: ...
+    async def probe(self, cluster: Cluster, credential: str, target: ExecutionTarget) -> ProbeResult: ...
 ```
 
 `SkipProbe` (or equivalent) covers RHEL and `local://` endpoints: return a
@@ -199,21 +200,18 @@ result that the monitor treats as “do not update.”
 
 ### Kubernetes client
 
-Cluster `api_key` is already stored in two shapes:
-
-- Bearer token (OpenShift `oc whoami --show-token` via the EP dev CLI).
-- Kubeconfig blob (local Kind / minikube via the EP dev CLI).
-
-The client factory must accept both. Add `kubernetes` (or `kubernetes_asyncio`)
-to execution-plane dependencies. Keep the probe behind the protocol so unit
-tests never talk to a cluster.
+The monitor resolves `Cluster.credential_ref` through AO before constructing a
+Kubernetes client. Resolution failures are reported as unhealthy without
+exposing the credential. Keep the probe behind the protocol so unit tests never
+talk to a cluster.
 
 This client factory is intentionally shared: the vanilla Kubernetes Worker
 Manager will need the same construction from Cluster credentials. Do not bury
 it inside the probe as a private helper that the Worker Manager cannot import.
 
-`ClusterStore.get()` redacts `api_key`. The monitor loop uses the explicit
-credential-read capability, `ClusterStore.get_with_credentials()`.
+The monitor loads Cluster connection metadata through
+`ClusterStore.get_with_credentials()`, which now exposes only the UUID
+reference and CA certificate rather than a raw credential.
 
 #### TLS
 

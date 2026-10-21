@@ -66,6 +66,7 @@ Run the worker with the same EP database and a fixed AO completion callback URL:
 EP_DATABASE_URL=postgresql+asyncpg://user:password@localhost/execution_plane \
 EP_CREDENTIAL_ENCRYPTION_KEY=<base64url-encoded-32-byte-key> \
 EP_COMPLETION_CALLBACK_URL=https://syntara.example.com/api/execution_plane/v1/events \
+EP_CREDENTIAL_RESOLUTION_CALLBACK_URL=https://syntara.example.com/api/execution_plane/v1/credentials/resolve \
 EP_CALLBACK_CA_CERT_PATH=/run/secrets/s2s-ca.pem \
 EP_CALLBACK_CERT_PATH=/run/secrets/execution-plane.crt \
 EP_CALLBACK_KEY_PATH=/run/secrets/execution-plane.key \

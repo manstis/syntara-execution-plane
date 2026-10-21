@@ -25,7 +25,7 @@ message = ClusterRegister(
     name="workers",
     endpoint="https://cluster.example",
     namespace="execution-plane",
-    credential="cluster-token",
+    credential_ref=uuid4(),
 ).to_message(
     source_id="syntara-orchestration",
     destination_id="execution-plane",

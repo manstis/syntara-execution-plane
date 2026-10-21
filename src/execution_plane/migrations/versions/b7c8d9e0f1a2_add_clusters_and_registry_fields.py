@@ -53,7 +53,7 @@ def upgrade() -> None:
         sa.Column("enabled", sa.Boolean(), nullable=False),
         sa.Column("status_message", sa.String(), nullable=True),
         sa.Column("labels", JSONB(), nullable=False, server_default="{}"),
-        sa.Column("api_key", sa.String(), nullable=False),
+        sa.Column("credential_ref", sa.UUID(), nullable=False),
         sa.Column("created_by", sa.UUID(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_by", sa.UUID(), nullable=False),
@@ -73,7 +73,7 @@ def upgrade() -> None:
         sa.Column("is_default", sa.Boolean(), nullable=False),
         schema=EP,
     )
-    op.add_column("execution_targets", sa.Column("api_key", sa.String(), nullable=False), schema=EP)
+    op.add_column("execution_targets", sa.Column("credential_ref", sa.UUID(), nullable=False), schema=EP)
     op.add_column("execution_targets", sa.Column("status_message", sa.String(), nullable=True), schema=EP)
     op.add_column("execution_targets", sa.Column("created_by", sa.UUID(), nullable=False), schema=EP)
     op.add_column("execution_targets", sa.Column("updated_by", sa.UUID(), nullable=False), schema=EP)
@@ -125,7 +125,7 @@ def downgrade() -> None:
         "updated_by",
         "created_by",
         "status_message",
-        "api_key",
+        "credential_ref",
         "is_default",
         "cluster_id",
     ):
